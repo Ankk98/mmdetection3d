@@ -1,0 +1,69 @@
+ARG ROCM_TAG=rocm7.1.1_ubuntu22.04_py3.10_pytorch_release_2.9.1
+
+# Base image:
+#   - Provided by AMD: see https://hub.docker.com/r/rocm/pytorch/tags
+#   - Includes ROCm 7.1.1 stack, PyTorch with ROCm backend, Python 3.10, Ubuntu 22.04
+FROM rocm/pytorch:${ROCM_TAG}
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Install system dependencies required by MMDetection3D and its demos.
+# These mirror the original CUDA-based Dockerfile where possible.
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libsm6 \
+    libxext6 \
+    git \
+    ninja-build \
+    libglib2.0-0 \
+    libxrender-dev \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
+
+# Install OpenMMLab core libs on top of ROCm-enabled PyTorch.
+# We rely on API compatibility between CUDA and ROCm in PyTorch and MM*.
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir openmim \
+ && mim install "mmengine" "mmcv>=2.0.0rc4" "mmdet>=3.0.0"
+
+# Copy local MMDetection3D repo into the image so local edits are respected.
+WORKDIR /mmdetection3d
+COPY . /mmdetection3d
+
+# Install MMDetection3D and its runtime dependencies.
+# Note:
+#   - setup.py imports `torch`, so we disable build isolation to ensure it can
+#     see the ROCm PyTorch already present in the base image.
+#   - The build backend expects `bdist_wheel`, so we install `wheel` first.
+# We install the package in non-editable mode inside the image; if you need
+# editable installs, do that on the host or in a dev container.
+# setup.py already wires install_requires to requirements/runtime.txt.
+# We intentionally do NOT install `requirements.txt` here because it pulls in
+# optional extras such as Waymo TF dependencies (waymo-open-dataset-tf-*),
+# which are not available for this environment and are not needed for
+# typical ROCm inference use cases.
+RUN pip install --no-cache-dir wheel \
+ && pip install --no-cache-dir --no-build-isolation .
+
+# Simple smoke test (optional; kept as a comment to avoid slowing builds):
+#   docker run --rm --device=/dev/kfd --device=/dev/dri \
+#     --group-add video --ipc=host <image> \
+#     python -c "import torch; print(torch.cuda.is_available(), torch.version.hip)"
+#
+# Runtime notes for ROCm on AMD GPUs (host assumptions):
+#   - Host has recent Linux kernel and AMDGPU/ROCm 7.1.1-compatible drivers.
+#   - Typical run example:
+#       docker run --rm \
+#         --device=/dev/kfd \
+#         --device=/dev/dri \
+#         --group-add video \
+#         --ipc=host \
+#         -v /path/to/data:/data \
+#         <image> \
+#         python tools/test.py ...
+
+CMD ["/bin/bash"]
+
+
