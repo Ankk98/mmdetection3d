@@ -1,0 +1,108 @@
+# Copyright (c) OpenMMLab. All rights reserved.
+from typing import Callable, List, Union
+
+import numpy as np
+
+from mmdet3d.registry import DATASETS
+from .kitti_dataset import KittiDataset
+
+
+@DATASETS.register_module()
+class SiTDataset(KittiDataset):
+    r"""SiT Dataset.
+
+    This class serves as the API for experiments on the `SiT Dataset
+    <https://spalaboratory.github.io/SiT/>`_.
+
+    The SiT dataset is a social navigation dataset published at NeurIPS 2023,
+    focusing on pedestrian detection and tracking in crowded environments from
+    a robot's perspective.
+
+    Args:
+        data_root (str): Path of dataset root.
+        ann_file (str): Path of annotation file.
+        pipeline (List[dict]): Pipeline used for data processing.
+            Defaults to [].
+        modality (dict): Modality to specify the sensor data used as input.
+            Defaults to dict(use_lidar=True).
+        default_cam_key (str): The default camera name adopted.
+            Defaults to 'CAM2'.
+        load_type (str): Type of loading mode. Defaults to 'frame_based'.
+        box_type_3d (str): Type of 3D box of this dataset.
+            Based on the `box_type_3d`, the dataset will encapsulate the box
+            to its original format then converted them to `box_type_3d`.
+            Defaults to 'LiDAR' in this dataset.
+        filter_empty_gt (bool): Whether to filter the data with empty GT.
+            If it's set to be True, the example with empty annotations after
+            data pipeline will be dropped and a random example will be chosen
+            in `__getitem__`. Defaults to True.
+        test_mode (bool): Whether the dataset is in test mode.
+            Defaults to False.
+        pcd_limit_range (List[float]): The range of point cloud used to filter
+            invalid predicted boxes. Defaults to [-50, -50, -5, 50, 50, 3].
+    """
+
+    # SiT dataset classes - Pedestrian and Car (Pedestrain_sitting mapped to Pedestrian)
+    METAINFO = {
+        'classes': ('Pedestrian', 'Car'),
+        'palette': [(106, 0, 228), (165, 42, 42)]  # Colors for visualization
+    }
+
+    def __init__(self,
+                 data_root: str,
+                 ann_file: str,
+                 pipeline: List[Union[dict, Callable]] = [],
+                 modality: dict = dict(use_lidar=True),
+                 default_cam_key: str = 'CAM2',
+                 load_type: str = 'frame_based',
+                 box_type_3d: str = 'LiDAR',
+                 filter_empty_gt: bool = True,
+                 test_mode: bool = False,
+                 pcd_limit_range: List[float] = [-50, -50, -5, 50, 50, 3],
+                 **kwargs) -> None:
+
+        # Call parent constructor with adjusted parameters
+        super().__init__(
+            data_root=data_root,
+            ann_file=ann_file,
+            pipeline=pipeline,
+            modality=modality,
+            default_cam_key=default_cam_key,
+            load_type=load_type,
+            box_type_3d=box_type_3d,
+            filter_empty_gt=filter_empty_gt,
+            test_mode=test_mode,
+            pcd_limit_range=pcd_limit_range,
+            **kwargs)
+
+        # SiT-specific attributes if needed
+        self.sit_classes = ['Pedestrian', 'Car']
+
+    def parse_ann_info(self, info: dict) -> dict:
+        """Process the `instances` in data info to `ann_info`.
+
+        For SiT dataset, we use LiDAR-only processing without camera data.
+
+        Args:
+            info (dict): Data information of single data sample.
+
+        Returns:
+            dict: Annotation information.
+        """
+        # For LiDAR-only datasets, we can skip the camera processing
+        # and use the base Det3DDataset implementation
+        if not self.modality['use_camera']:
+            # Use the base implementation which handles instances correctly
+            from mmdet3d.datasets.det3d_dataset import Det3DDataset
+            return Det3DDataset.parse_ann_info(self, info)
+        else:
+            # Use KITTI implementation for camera data
+            return super().parse_ann_info(info)
+
+    def _get_metainfo(self) -> dict:
+        """Get meta information of dataset.
+
+        Returns:
+            dict: Meta information of dataset.
+        """
+        return self.METAINFO
