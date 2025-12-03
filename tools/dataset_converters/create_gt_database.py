@@ -218,6 +218,54 @@ def create_groundtruth_database(dataset_class_name,
                     backend_args=backend_args)
             ])
 
+    elif dataset_class_name == 'SiTDataset':
+        backend_args = None
+        # data_path is ./data/sit/training, actual files are at ./data/sit/training/training/velodyne/
+        # info file paths are training/velodyne/0.bin
+        # So: data_root = ./data/sit/training, data_prefix = '' (empty)
+        # This gives: ./data/sit/training + training/velodyne/0.bin = ./data/sit/training/training/velodyne/0.bin ✓
+        # But info file is at ./data/sit/sit_infos_train.pkl, so we need to handle that separately
+        # Actually, let's keep data_root as data_path for point clouds, but handle info file path correctly
+        # The info_path parameter should be the full path or relative to data_path's parent
+        dataset_cfg.update(
+            test_mode=False,
+            data_root=data_path,  # ./data/sit/training (for point cloud files)
+            data_prefix=dict(
+                pts='', img='', sweeps=''),  # Empty prefix, paths in info already include training/velodyne/
+            modality=dict(
+                use_lidar=True,
+                use_depth=False,
+                use_lidar_intensity=True,
+                use_camera=False,
+            ),
+            pipeline=[
+                dict(
+                    type='LoadPointsFromFile',
+                    coord_type='LIDAR',
+                    load_dim=4,
+                    use_dim=4,
+                    backend_args=backend_args),
+                dict(
+                    type='LoadAnnotations3D',
+                    with_bbox_3d=True,
+                    with_label_3d=True,
+                    backend_args=backend_args)
+            ])
+        # Override ann_file to handle relative paths correctly
+        # The dataset will join data_root with ann_file, so we need to make ann_file
+        # relative to data_root, or use an absolute path
+        if info_path:
+            if osp.isabs(info_path):
+                dataset_cfg['ann_file'] = info_path
+            elif info_path.startswith('../'):
+                # Resolve relative to data_path's parent and make it absolute
+                resolved_path = osp.normpath(osp.join(data_path, info_path))
+                dataset_cfg['ann_file'] = osp.abspath(resolved_path)
+            else:
+                # Relative path, join with data_path's parent and make absolute
+                resolved_path = osp.join(osp.dirname(data_path), info_path)
+                dataset_cfg['ann_file'] = osp.abspath(resolved_path)
+
     dataset = DATASETS.build(dataset_cfg)
 
     if database_save_path is None:
@@ -241,8 +289,15 @@ def create_groundtruth_database(dataset_class_name,
         example = dataset.pipeline(data_info)
         annos = example['ann_info']
         image_idx = example['sample_idx']
-        points = example['points'].numpy()
-        gt_boxes_3d = annos['gt_bboxes_3d'].numpy()
+        # Handle both old format (points) and new format (inputs['points'])
+        if 'points' in example:
+            points = example['points'].numpy() if hasattr(example['points'], 'numpy') else example['points']
+        elif 'inputs' in example and 'points' in example['inputs']:
+            points = example['inputs']['points'].numpy() if hasattr(example['inputs']['points'], 'numpy') else example['inputs']['points']
+        else:
+            raise KeyError(f"Could not find 'points' in example. Available keys: {list(example.keys())}")
+        # Handle both tensor and numpy array for gt_bboxes_3d
+        gt_boxes_3d = annos['gt_bboxes_3d'].numpy() if hasattr(annos['gt_bboxes_3d'], 'numpy') else annos['gt_bboxes_3d']
         names = [dataset.metainfo['classes'][i] for i in annos['gt_labels_3d']]
         group_dict = dict()
         if 'group_ids' in annos:

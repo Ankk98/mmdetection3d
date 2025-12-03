@@ -6,12 +6,30 @@ _base_ = [
 
 point_cloud_range = [-50, -50, -5, 50, 50, 3]  # SiT point cloud range
 # dataset settings
-data_root = 'data/sit_test/'
+data_root = 'data/sit/'
 class_names = ['Pedestrian', 'Car']
 metainfo = dict(classes=class_names)
 backend_args = None
 
-# Disable data augmentation for small dataset testing
+# PointPillars adopted a different sampling strategies among classes
+db_sampler = dict(
+    data_root=data_root,
+    info_path=data_root + 'sit_dbinfos_train.pkl',
+    rate=1.0,
+    prepare=dict(
+        filter_by_difficulty=[-1],
+        filter_by_min_points=dict(Pedestrian=5, Car=5)),
+    classes=class_names,
+    sample_groups=dict(Pedestrian=15, Car=15),
+    points_loader=dict(
+        type='LoadPointsFromFile',
+        coord_type='LIDAR',
+        load_dim=4,
+        use_dim=4,
+        backend_args=backend_args),
+    backend_args=backend_args)
+
+# PointPillars uses different augmentation hyper parameters
 train_pipeline = [
     dict(
         type='LoadPointsFromFile',
@@ -20,7 +38,7 @@ train_pipeline = [
         use_dim=4,
         backend_args=backend_args),
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
-    # DISABLED: dict(type='ObjectSample', db_sampler=db_sampler, use_ground_plane=True),
+    dict(type='ObjectSample', db_sampler=db_sampler, use_ground_plane=True),
     dict(type='RandomFlip3D', flip_ratio_bev_horizontal=0.5),
     dict(
         type='GlobalRotScaleTrans',
@@ -59,60 +77,59 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=2,  # Smaller batch size for testing
-    num_workers=1,  # Fewer workers
-    persistent_workers=False,  # Disable for testing
-    sampler=dict(type='DefaultSampler', shuffle=True),
-    dataset=dict(
-        type='SiTDataset',
-        data_root=data_root,
-        ann_file='sit_infos_train.pkl',
-        data_prefix=dict(pts='training/velodyne'),
-        pipeline=train_pipeline,
-        modality=dict(use_lidar=True, use_camera=False),
-        test_mode=False,
-        metainfo=metainfo,
-        box_type_3d='LiDAR',
-        backend_args=backend_args))
-test_dataloader = dict(
-    batch_size=1,
-    num_workers=1,
-    persistent_workers=False,
-    drop_last=False,
-    sampler=dict(type='DefaultSampler', shuffle=False),
-    dataset=dict(
-        type='SiTDataset',
-        data_root=data_root,
-        data_prefix=dict(pts='training/velodyne'),
-        ann_file='sit_infos_train.pkl',  # Use same data for testing
-        pipeline=test_pipeline,
-        modality=dict(use_lidar=True, use_camera=False),
-        test_mode=True,
-        metainfo=metainfo,
-        box_type_3d='LiDAR',
-        backend_args=backend_args))
-
-val_dataloader = test_dataloader
+    dataset=dict(pipeline=train_pipeline, metainfo=metainfo))
+test_dataloader = dict(dataset=dict(pipeline=test_pipeline, metainfo=metainfo))
+val_dataloader = dict(dataset=dict(pipeline=test_pipeline, metainfo=metainfo))
 
 # Model settings for SiT dataset
+# Calculate output shape based on point cloud range and voxel size
+# Range: [-50, -50, -5, 50, 50, 3], Voxel size: 0.16
+# X: (50 - (-50)) / 0.16 = 625, Y: (50 - (-50)) / 0.16 = 625
 model = dict(
+    data_preprocessor=dict(
+        voxel_layer=dict(point_cloud_range=point_cloud_range)),
+    voxel_encoder=dict(point_cloud_range=point_cloud_range),
+    middle_encoder=dict(
+        type='PointPillarsScatter', in_channels=64, output_shape=[625, 625]),
     bbox_head=dict(
         num_classes=2,  # Pedestrian, Car
         anchor_generator=dict(
+            ranges=[
+                [-50, -50, -0.6, 50, 50, -0.6],  # Pedestrian range
+                [-50, -50, -0.6, 50, 50, -0.6],   # Car range
+            ],
             sizes=[
                 [0.8, 0.6, 1.73],  # Pedestrian (adjusted for SiT)
                 [1.76, 0.6, 1.73], # Car (adjusted for SiT)
             ],
         ),
     ),
+    train_cfg=dict(
+        assigner=[
+            dict(  # for Pedestrian
+                type='Max3DIoUAssigner',
+                iou_calculator=dict(type='mmdet3d.BboxOverlapsNearest3D'),
+                pos_iou_thr=0.5,
+                neg_iou_thr=0.35,
+                min_pos_iou=0.35,
+                ignore_iof_thr=-1),
+            dict(  # for Car
+                type='Max3DIoUAssigner',
+                iou_calculator=dict(type='mmdet3d.BboxOverlapsNearest3D'),
+                pos_iou_thr=0.6,
+                neg_iou_thr=0.45,
+                min_pos_iou=0.45,
+                ignore_iof_thr=-1),
+        ],
+    ),
 )
 
-# Training settings for small dataset
+# In practice PointPillars also uses a different schedule
+# optimizer
 lr = 0.001
-epoch_num = 5  # Just a few epochs for testing
+epoch_num = 80
 optim_wrapper = dict(
     optimizer=dict(lr=lr), clip_grad=dict(max_norm=35, norm_type=2))
-
 param_scheduler = [
     dict(
         type='CosineAnnealingLR',
@@ -147,8 +164,13 @@ param_scheduler = [
         by_epoch=True,
         convert_to_iter_based=True)
 ]
-
-train_cfg = dict(by_epoch=True, max_epochs=epoch_num, val_interval=1)
+# max_norm=35 is slightly better than 10 for PointPillars in the earlier
+# development of the codebase thus we keep the setting. But we does not
+# specifically tune this parameter.
+# PointPillars usually need longer schedule than second, we simply double
+# the training schedule. Do remind that since we use RepeatDataset and
+# repeat factor is 2, so we actually train 160 epochs.
+train_cfg = dict(by_epoch=True, max_epochs=epoch_num, val_interval=2)
 val_cfg = dict()
 test_cfg = dict()
 
