@@ -82,8 +82,11 @@ def load_gt_annos(ann_file: str) -> List[Dict]:
             format_only=False,
             backend_args=None)
 
-        data_infos = metric_helper.convert_annos_to_kitti_annos(pkl_infos)
-        data_list: Sequence[Dict] = data_infos['data_list']
+        # convert_annos_to_kitti_annos expects a dict with
+        #   {'metainfo': ..., 'data_list': [...]}
+        # and returns the updated data_list (list of per-sample dicts).
+        data_list: Sequence[Dict] = metric_helper.convert_annos_to_kitti_annos(
+            pkl_infos)
 
         # Each element in data_list now has a 'kitti_annos' field.
         gt_annos = [info['kitti_annos'] for info in data_list]
