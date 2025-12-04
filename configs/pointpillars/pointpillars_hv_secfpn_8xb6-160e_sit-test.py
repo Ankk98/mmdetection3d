@@ -84,7 +84,7 @@ test_dataloader = dict(
         type='SiTDataset',
         data_root=data_root,
         data_prefix=dict(pts='training/velodyne'),
-        ann_file='sit_infos_train.pkl',  # Use same data for testing
+        ann_file='sit_infos_test.pkl',
         pipeline=test_pipeline,
         modality=dict(use_lidar=True, use_camera=False),
         test_mode=True,
@@ -92,7 +92,23 @@ test_dataloader = dict(
         box_type_3d='LiDAR',
         backend_args=backend_args))
 
-val_dataloader = test_dataloader
+val_dataloader = dict(
+    batch_size=1,
+    num_workers=1,
+    persistent_workers=False,
+    drop_last=False,
+    sampler=dict(type='DefaultSampler', shuffle=False),
+    dataset=dict(
+        type='SiTDataset',
+        data_root=data_root,
+        data_prefix=dict(pts='training/velodyne'),
+        ann_file='sit_infos_val.pkl',
+        pipeline=test_pipeline,
+        modality=dict(use_lidar=True, use_camera=False),
+        test_mode=True,
+        metainfo=metainfo,
+        box_type_3d='LiDAR',
+        backend_args=backend_args))
 
 # Model settings for SiT dataset
 model = dict(
