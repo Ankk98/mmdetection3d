@@ -448,8 +448,24 @@ class GTDatabaseCreater:
         example = self.pipeline(input_dict)
         annos = example['ann_info']
         image_idx = example['sample_idx']
-        points = example['points'].numpy()
-        gt_boxes_3d = annos['gt_bboxes_3d'].numpy()
+        # Handle both old format (points) and new format (inputs['points'])
+        if 'points' in example:
+            points = (example['points'].numpy()
+                      if hasattr(example['points'], 'numpy') else
+                      example['points'])
+        elif 'inputs' in example and 'points' in example['inputs']:
+            pts_field = example['inputs']['points']
+            points = (pts_field.numpy()
+                      if hasattr(pts_field, 'numpy') else pts_field)
+        else:
+            raise KeyError(
+                "Could not find 'points' in example. "
+                f'Available keys: {list(example.keys())}')
+        # Handle both tensor and numpy array for gt_bboxes_3d
+        gt_bboxes_field = annos['gt_bboxes_3d']
+        gt_boxes_3d = (gt_bboxes_field.numpy()
+                       if hasattr(gt_bboxes_field, 'numpy') else
+                       gt_bboxes_field)
         names = [
             self.dataset.metainfo['classes'][i] for i in annos['gt_labels_3d']
         ]
