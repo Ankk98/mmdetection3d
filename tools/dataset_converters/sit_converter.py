@@ -393,6 +393,12 @@ def get_sit_image_info(data_path: str,
             # This should not happen for normal SiT/KITTI-style IDs.
             frame_id_int = 0
 
+        # `sample_idx` is expected by downstream code such as
+        # :func:`create_groundtruth_database` (see usages in
+        # `tools/dataset_converters/create_gt_database.py`).  For KITTI-like
+        # datasets this is simply the integer frame id.
+        info['sample_idx'] = frame_id_int
+
         # Point cloud info
         if velodyne:
             pc_info = {'num_pts_feats': 4}

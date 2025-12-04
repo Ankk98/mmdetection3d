@@ -91,7 +91,11 @@ model = dict(
         voxel_layer=dict(point_cloud_range=point_cloud_range)),
     voxel_encoder=dict(point_cloud_range=point_cloud_range),
     middle_encoder=dict(
-        type='PointPillarsScatter', in_channels=64, output_shape=[625, 625]),
+        type='PointPillarsScatter',
+        in_channels=64,
+        # Use 624x624 so shapes are divisible by SECOND/SECONDFPN strides
+        # and multi-scale features align for concatenation.
+        output_shape=[624, 624]),
     bbox_head=dict(
         num_classes=2,  # Pedestrian, Car
         anchor_generator=dict(
