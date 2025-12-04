@@ -151,6 +151,10 @@ class Base3DInferencer(BaseInferencer):
             ``dataset_meta``) is not yet available.
         """
         visualizer = super()._init_visualizer(cfg)
+        # If the parent class decides not to create a visualizer (e.g. no
+        # visualizer defined in the config), bail out early.
+        if visualizer is None:
+            return None
 
         dataset_meta = None
         # Preferred: use the metadata that was stored on the model.
