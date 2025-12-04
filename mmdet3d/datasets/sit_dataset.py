@@ -92,26 +92,46 @@ class SiTDataset(KittiDataset):
         """Process the `instances` in data info to `ann_info`.
 
         For SiT dataset, we use LiDAR-only processing without camera data.
-        We convert numpy arrays to LiDARInstance3DBoxes objects.
+        We convert numpy arrays to :class:`LiDARInstance3DBoxes` objects.
+
+        Compared to the default KITTI flow, we still need to:
+
+        - use the base :class:`Det3DDataset` logic to build numpy arrays and
+          apply ``label_mapping``; and
+        - run ``_remove_dontcare`` so that any instances mapped to label ``-1``
+          (e.g. unknown classes from the converter) are filtered out.
 
         Args:
             info (dict): Data information of single data sample.
 
         Returns:
-            dict: Annotation information with gt_bboxes_3d as LiDARInstance3DBoxes.
+            dict: Annotation information with ``gt_bboxes_3d`` as
+            :class:`LiDARInstance3DBoxes`.
         """
-        # Call base Det3DDataset to get numpy arrays
+        # Use the generic Det3D implementation to build ann_info with numpy
+        # arrays and label mapping applied. We cannot call super().parse_ann_info
+        # here because KittiDataset.parse_ann_info assumes camera geometry
+        # (e.g. info['images']['CAM2']['lidar2cam']), which SiT does not have.
         from mmdet3d.datasets.det3d_dataset import Det3DDataset
         ann_info = Det3DDataset.parse_ann_info(self, info)
 
         if ann_info is None:
-            # Empty instance
+            # Empty instance: mirror the parent contract by returning a complete
+            # `ann_info` dict that still contains the `instances` key.
             ann_info = dict()
             ann_info['gt_bboxes_3d'] = np.zeros((0, 7), dtype=np.float32)
             ann_info['gt_labels_3d'] = np.zeros(0, dtype=np.int64)
+            # For empty GT, `instances` should be an empty list rather than
+            # missing entirely to stay consistent with `Det3DDataset`.
+            ann_info['instances'] = info.get('instances', [])
+        else:
+            # Filter out "dontcare"/unknown categories where labels are -1,
+            # matching the behavior in `KittiDataset.parse_ann_info`.
+            ann_info = self._remove_dontcare(ann_info)
 
-        # Convert numpy array to LiDARInstance3DBoxes for LiDAR-only dataset
-        # SiT uses LiDAR coordinates directly, so no coordinate conversion needed
+        # Convert numpy array to LiDARInstance3DBoxes for LiDAR-only dataset.
+        # SiT uses LiDAR coordinates directly, so no camera-to-lidar transform
+        # is required here.
         gt_bboxes_3d = LiDARInstance3DBoxes(
             ann_info['gt_bboxes_3d'],
             box_dim=ann_info['gt_bboxes_3d'].shape[-1]).convert_to(
