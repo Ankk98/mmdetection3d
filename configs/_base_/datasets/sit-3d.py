@@ -165,10 +165,12 @@ val_evaluator = dict(
     # segmentation faults. Enable format_only to skip the native eval
     # while still dumping results in KITTI format if needed.
     format_only=True,
+    submission_prefix=data_root + 'kitti_val_pred',
     backend_args=backend_args)
 test_evaluator = dict(
     type='KittiMetric',
     ann_file=data_root + 'sit_infos_test.pkl',
     metric='bbox',
     format_only=True,
+    submission_prefix=data_root + 'kitti_test_pred',
     backend_args=backend_args)
