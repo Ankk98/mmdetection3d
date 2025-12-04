@@ -93,9 +93,9 @@ model = dict(
     middle_encoder=dict(
         type='PointPillarsScatter',
         in_channels=64,
-        # Use 624x624 so shapes are divisible by SECOND/SECONDFPN strides
-        # and multi-scale features align for concatenation.
-        output_shape=[624, 624]),
+        # Use full grid size to match voxelization (100 m / 0.16 m = 625)
+        # and avoid out-of-bounds indices in the scatter step.
+        output_shape=[625, 625]),
     bbox_head=dict(
         num_classes=2,  # Pedestrian, Car
         anchor_generator=dict(
