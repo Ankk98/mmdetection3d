@@ -126,6 +126,12 @@ class KittiMetric(BaseMetric):
                     }
                     for instance in annos['instances']:
                         label = instance['bbox_label']
+                        # Some pipelines may encode "unknown" / filtered
+                        # instances with label -1. Skip any label that is
+                        # negative or not present in label2cat to avoid
+                        # KeyError when doing label2cat[label].
+                        if label not in label2cat:
+                            continue
                         kitti_annos['name'].append(label2cat[label])
                         # Some datasets (e.g. SiT) may omit KITTI-specific
                         # camera fields like truncated/occluded/alpha/score

@@ -521,13 +521,22 @@ def convert_annos_to_instances(annos: dict) -> list:
     if len(annos['name']) == 0:
         return instances
 
-    # Class mapping
+    # Class mapping. Any class not in this mapping will be treated as
+    # "unknown" and skipped. This avoids propagating invalid labels (e.g. -1)
+    # into downstream evaluation code.
     class_mapping = {'Pedestrian': 0, 'Car': 1}
 
     for i in range(len(annos['name'])):
+        mapped_label = class_mapping.get(annos['name'][i], -1)
+        if mapped_label < 0:
+            # Skip instances with unknown class names instead of assigning
+            # label -1. Keeping them would later cause KeyError when
+            # converting back to KITTI names via label2cat[-1].
+            continue
+
         instance = {
             'bbox': annos['bbox'][i].tolist(),
-            'bbox_label': class_mapping.get(annos['name'][i], -1),
+            'bbox_label': mapped_label,
             # KITTI `dimensions` are [h, w, l]. For LiDAR boxes we expect
             # [size_x, size_y, size_z] = [length, width, height], with z
             # vertical. Map explicitly as [l, w, h] to avoid transposed boxes.
@@ -541,7 +550,7 @@ def convert_annos_to_instances(annos: dict) -> list:
                 annos['rotation_y'][i]     # yaw
             ],
             'bbox_3d_isvalid': True,
-            'bbox_label_3d': class_mapping.get(annos['name'][i], -1),
+            'bbox_label_3d': mapped_label,
             'depth': 0.0,  # Placeholder depth
             'center_2d': [0.0, 0.0],  # Placeholder center 2D
             'attr_label': -1,  # No attribute

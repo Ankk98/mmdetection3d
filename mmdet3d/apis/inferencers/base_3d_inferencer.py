@@ -140,8 +140,31 @@ class Base3DInferencer(BaseInferencer):
         return -1
 
     def _init_visualizer(self, cfg: ConfigType) -> Optional[Visualizer]:
+        """Initialize visualizer with reasonable dataset metadata defaults.
+
+        Note:
+            In some versions of MMEngine, the visualizer may be initialized
+            before :attr:`self.model` is constructed. Accessing
+            ``self.model.dataset_meta`` in that case would raise an
+            :class:`AttributeError`. To make the inferencer robust, we fall
+            back to the dataset's metainfo when the model (or its
+            ``dataset_meta``) is not yet available.
+        """
         visualizer = super()._init_visualizer(cfg)
-        visualizer.dataset_meta = self.model.dataset_meta
+
+        dataset_meta = None
+        # Preferred: use the metadata that was stored on the model.
+        if getattr(self, 'model', None) is not None and hasattr(
+                self.model, 'dataset_meta'):
+            dataset_meta = self.model.dataset_meta
+
+        # Fallback: lazily build the test dataset to fetch its metainfo.
+        if dataset_meta is None:
+            test_dataset_cfg = deepcopy(cfg.test_dataloader.dataset)
+            test_dataset_cfg['lazy_init'] = True
+            dataset_meta = DATASETS.build(test_dataset_cfg).metainfo
+
+        visualizer.dataset_meta = dataset_meta
         return visualizer
 
     def _dispatch_kwargs(self,
