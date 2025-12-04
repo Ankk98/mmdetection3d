@@ -84,9 +84,40 @@ class SiTDataset(KittiDataset):
 
         For SiT we follow the standard Det3DDataset path handling
         (data_root + data_prefix + paths stored in the info file),
-        so no custom path munging is required here.
+        but early iterations of the converter stored a full
+        ``'training/velodyne/xxx.bin'`` path inside the info file while
+        the dataset's ``data_prefix['pts']`` was also set to
+        ``'training/velodyne'``.  When combined in
+        :meth:`Det3DDataset.parse_data_info`, this produced duplicated
+        segments such as:
+
+            ``data/sit/training/velodyne/training/velodyne/000001.bin``
+
+        which in turn caused ``FileNotFoundError`` during GT database
+        creation and training.
+
+        To keep the info format backwards-compatible while avoiding I/O
+        errors, we detect and collapse this specific duplication pattern
+        after the base implementation has done its work.
         """
-        return super().parse_data_info(info)
+        info = super().parse_data_info(info)
+
+        # Normalize any duplicated "training/velodyne" segments that may
+        # arise when both the info dict and `data_prefix['pts']` already
+        # contain this sub-path (e.g.
+        # "data/sit/training/velodyne/training/velodyne/000001.bin").
+        if self.modality.get('use_lidar', False) and 'lidar_points' in info:
+            lidar_path = info['lidar_points'].get('lidar_path', '')
+            dup_segment = osp.join('training', 'velodyne', 'training',
+                                   'velodyne')
+            if dup_segment in lidar_path:
+                normalized = lidar_path.replace(
+                    dup_segment, osp.join('training', 'velodyne'))
+                info['lidar_points']['lidar_path'] = normalized
+                # Keep the convenience mirror field in sync as well.
+                info['lidar_path'] = normalized
+
+        return info
 
     def parse_ann_info(self, info: dict) -> dict:
         """Process the `instances` in data info to `ann_info`.

@@ -673,13 +673,18 @@ def _calculate_num_points_in_gt(data_path: str,
         points = np.fromfile(str(pc_path), dtype=np.float32).reshape(-1, 4)
         points_xyz = points[:, :3]
 
-        # Collect boxes in [x, y, z, w, h, l, yaw] format from instances
+        # Collect boxes in [x, y, z, w, h, l, yaw] format from instances.
+        # Some instances may not have a valid 7-D bbox_3d; we must keep track
+        # of which instances contribute to `boxes` so that we can align the
+        # point counts correctly.
         boxes = []
+        valid_insts = []
         for inst in info['instances']:
             bbox_3d = np.asarray(inst['bbox_3d'], dtype=np.float32)
             if bbox_3d.shape[0] != 7:
                 continue
             boxes.append(bbox_3d)
+            valid_insts.append(inst)
 
         if not boxes:
             continue
@@ -690,8 +695,8 @@ def _calculate_num_points_in_gt(data_path: str,
         point_indices = box_np_ops.points_in_rbbox(points_xyz, boxes)
         counts = point_indices.sum(axis=0).astype(np.int32)
 
-        # Write back into instances
-        for inst, num in zip(info['instances'], counts):
+        # Write back into only the instances that had valid 7-D boxes.
+        for inst, num in zip(valid_insts, counts):
             inst['num_lidar_pts'] = int(num)
 
 
