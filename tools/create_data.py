@@ -293,14 +293,15 @@ def sit_data_prep(root_path, info_prefix, out_dir):
     # Create info files (sit_infos_train/val/test.pkl) under out_dir
     sit.create_sit_infos(data_path, save_path=out_dir, pkl_prefix=info_prefix)
 
-    # Create groundtruth database and dbinfos using the generic helper
-    info_file = osp.join(out_dir, f'{info_prefix}_infos_train.pkl')
+    # Create groundtruth database and dbinfos using the generic helper.
+    # For SiT we always use `<info_prefix>_infos_train.pkl` relative to data_root,
+    # so we don't need to pass an explicit info_path here.
     db_info_save_path = osp.join(out_dir, f'{info_prefix}_dbinfos_train.pkl')
     create_groundtruth_database(
         'SiTDataset',
         data_path,            # ./data/sit
         info_prefix,
-        info_path=info_file,  # ./data/sit/sit_infos_train.pkl
+        info_path=None,
         used_classes=['Pedestrian', 'Car'],
         database_save_path=osp.join(out_dir, f'{info_prefix}_gt_database'),
         db_info_save_path=db_info_save_path)

@@ -248,9 +248,10 @@ def create_groundtruth_database(dataset_class_name,
                     with_label_3d=True,
                     backend_args=backend_args)
             ])
-        # Use the provided info_path directly; it can be absolute or relative
-        if info_path:
-            dataset_cfg['ann_file'] = info_path
+        # For SiT, always use the standard relative info filename and let
+        # data_root control where it is loaded from. This avoids accidentally
+        # duplicating `data_root` when info_path is already prefixed.
+        dataset_cfg['ann_file'] = f'{info_prefix}_infos_train.pkl'
 
     dataset = DATASETS.build(dataset_cfg)
 

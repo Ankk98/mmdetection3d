@@ -77,7 +77,7 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    dataset=dict(dataset=dict(pipeline=train_pipeline, metainfo=metainfo)))
+    dataset=dict(pipeline=train_pipeline, metainfo=metainfo))
 test_dataloader = dict(dataset=dict(pipeline=test_pipeline, metainfo=metainfo))
 val_dataloader = dict(dataset=dict(pipeline=test_pipeline, metainfo=metainfo))
 

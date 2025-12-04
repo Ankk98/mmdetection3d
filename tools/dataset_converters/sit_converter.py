@@ -401,7 +401,10 @@ def get_sit_image_info(data_path: str,
             }
             info['calib'] = calib_info
 
-        # Load annotations if available
+        # Load annotations if available. Always initialize `instances` so that
+        # downstream Det3DDataset/SiTDataset logic can safely access it even
+        # when a frame has no labels.
+        info['instances'] = []
         if label_info and training:
             label_path = root_path / 'training' / 'label_2' / f'{idx}.txt'
             if label_path.exists():
@@ -542,9 +545,9 @@ def create_sit_infos(data_path: str,
         'info_version': '1.1'
     }
 
-    # Create training info
+    # Create full info list
     print('Creating SiT training info...')
-    sit_infos_train = get_sit_image_info(
+    full_infos = get_sit_image_info(
         data_path,
         training=True,
         label_info=True,
@@ -552,29 +555,28 @@ def create_sit_infos(data_path: str,
         calib=True,
         relative_path=relative_path)
 
-    # Calculate num_points_in_gt per instance and store in instances[*]['num_lidar_pts']
+    # Split into train / val BEFORE saving so that train really has 80%
+    split_idx = len(full_infos) // 5  # 20% for val
+    sit_infos_val = full_infos[:split_idx]
+    sit_infos_train = full_infos[split_idx:]
+
+    # Calculate num_points_in_gt per instance on the TRAIN split only
     _calculate_num_points_in_gt(data_path, sit_infos_train, relative_path)
 
-    # Convert to new format with data_list
+    # Save train infos
     train_data_info = {
         'metainfo': metainfo,
         'data_list': sit_infos_train
     }
-
     filename = save_path / f'{pkl_prefix}_infos_train.pkl'
     print(f'SiT info train file is saved to {filename}')
     mmengine.dump(train_data_info, filename)
 
-    # Create val info (using 20% of frames for validation)
-    split_idx = len(sit_infos_train) // 5
-    sit_infos_val = sit_infos_train[:split_idx]
-    sit_infos_train = sit_infos_train[split_idx:]
-
+    # Save val infos
     val_data_info = {
         'metainfo': metainfo,
         'data_list': sit_infos_val
     }
-
     filename = save_path / f'{pkl_prefix}_infos_val.pkl'
     print(f'SiT info val file is saved to {filename}')
     mmengine.dump(val_data_info, filename)
@@ -689,7 +691,7 @@ def create_sit_database(data_path: str,
         'SiTDataset',
         str(data_path),
         pkl_prefix,
-        info_path=str(info_path),
+        info_path=None,
         used_classes=['Pedestrian', 'Car'],
         database_save_path=str(database_save_path),
         db_info_save_path=str(db_info_save_path),
