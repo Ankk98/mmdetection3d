@@ -1,6 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from typing import Callable, List, Union
-import os.path as osp
 
 import numpy as np
 
@@ -83,55 +82,11 @@ class SiTDataset(KittiDataset):
     def parse_data_info(self, info: dict) -> dict:
         """Process the raw data info.
 
-        Convert all relative path of needed modality data file to
-        the absolute path by joining with data_root.
-
-        Args:
-            info (dict): Raw info dict.
-
-        Returns:
-            dict: Has `ann_info` in training stage. And
-            all path has been converted to absolute path.
+        For SiT we follow the standard Det3DDataset path handling
+        (data_root + data_prefix + paths stored in the info file),
+        so no custom path munging is required here.
         """
-        # First call parent to join with data_prefix
-        info = super().parse_data_info(info)
-
-        # Then make paths absolute by joining with data_root
-        # The parent method already joined with data_prefix (which is empty for SiT),
-        # so the path is still relative like 'training/velodyne/25.bin'
-        # We need to join with data_root and make it absolute
-        if self.modality['use_lidar']:
-            lidar_path = info['lidar_points']['lidar_path']
-            
-            # Get absolute data_root for comparison
-            data_root_abs = osp.abspath(self.data_root)
-            
-            # If path is already absolute, verify it's correct
-            if osp.isabs(lidar_path):
-                # Check if it already contains data_root (to detect duplication)
-                if lidar_path.startswith(data_root_abs):
-                    # Path is absolute and contains data_root, use as-is
-                    pass
-                else:
-                    # Absolute path doesn't contain data_root - might be from another source
-                    # Use as-is but log a warning
-                    pass
-            else:
-                # Path is relative - need to join with data_root
-                # Check if path already contains data_root as a string (to avoid double-join)
-                data_root_str = str(self.data_root).rstrip('/\\')
-                if data_root_str in lidar_path and lidar_path.startswith(data_root_str):
-                    # Path already contains data_root string, just make absolute
-                    lidar_path = osp.abspath(lidar_path)
-                else:
-                    # Normal case: join with data_root and make absolute
-                    lidar_path = osp.join(self.data_root, lidar_path)
-                    lidar_path = osp.abspath(lidar_path)
-            
-            info['lidar_points']['lidar_path'] = lidar_path
-            info['lidar_path'] = lidar_path
-
-        return info
+        return super().parse_data_info(info)
 
     def parse_ann_info(self, info: dict) -> dict:
         """Process the `instances` in data info to `ann_info`.
@@ -148,19 +103,20 @@ class SiTDataset(KittiDataset):
         # Call base Det3DDataset to get numpy arrays
         from mmdet3d.datasets.det3d_dataset import Det3DDataset
         ann_info = Det3DDataset.parse_ann_info(self, info)
-        
+
         if ann_info is None:
             # Empty instance
             ann_info = dict()
             ann_info['gt_bboxes_3d'] = np.zeros((0, 7), dtype=np.float32)
             ann_info['gt_labels_3d'] = np.zeros(0, dtype=np.int64)
-        
+
         # Convert numpy array to LiDARInstance3DBoxes for LiDAR-only dataset
         # SiT uses LiDAR coordinates directly, so no coordinate conversion needed
         gt_bboxes_3d = LiDARInstance3DBoxes(
             ann_info['gt_bboxes_3d'],
-            box_dim=ann_info['gt_bboxes_3d'].shape[-1]).convert_to(self.box_mode_3d)
-        
+            box_dim=ann_info['gt_bboxes_3d'].shape[-1]).convert_to(
+                self.box_mode_3d)
+
         ann_info['gt_bboxes_3d'] = gt_bboxes_3d
         return ann_info
 

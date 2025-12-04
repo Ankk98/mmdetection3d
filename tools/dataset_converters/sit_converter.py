@@ -326,9 +326,14 @@ def create_imagesets(output_root: str, sequences: List[str], split_ratio: Tuple[
     write_split_file('test.txt', test_frames)
 
 
-def get_sit_image_info(data_path: str, training: bool = True, label_info: bool = True,
-                       velodyne: bool = True, calib: bool = False, image_ids: List[int] = None,
-                       relative_path: bool = True, with_imageshape: bool = True):
+def get_sit_image_info(data_path: str,
+                       training: bool = True,
+                       label_info: bool = True,
+                       velodyne: bool = True,
+                       calib: bool = False,
+                       image_ids: List[int] = None,
+                       relative_path: bool = True,
+                       with_imageshape: bool = True):
     """Get SiT image info similar to KITTI format.
 
     Args:
@@ -347,7 +352,9 @@ def get_sit_image_info(data_path: str, training: bool = True, label_info: bool =
     root_path = Path(data_path)
 
     if image_ids is None:
-        # Get all available frame indices
+        # Get all available frame indices from the normalized KITTI-style layout:
+        #   data_path/training/velodyne/*.bin (train)
+        #   data_path/testing/velodyne/*.bin  (test, if present)
         if training:
             velodyne_dir = root_path / 'training' / 'velodyne'
         else:
@@ -510,7 +517,9 @@ def convert_annos_to_instances(annos: dict) -> list:
     return instances
 
 
-def create_sit_infos(data_path: str, save_path: str = None, pkl_prefix: str = 'sit',
+def create_sit_infos(data_path: str,
+                     save_path: str = None,
+                     pkl_prefix: str = 'sit',
                      relative_path: bool = True):
     """Create info file of SiT dataset.
 
@@ -536,10 +545,14 @@ def create_sit_infos(data_path: str, save_path: str = None, pkl_prefix: str = 's
     # Create training info
     print('Creating SiT training info...')
     sit_infos_train = get_sit_image_info(
-        data_path, training=True, label_info=True, velodyne=True, calib=True,
+        data_path,
+        training=True,
+        label_info=True,
+        velodyne=True,
+        calib=True,
         relative_path=relative_path)
 
-    # Calculate num_points_in_gt
+    # Calculate num_points_in_gt per instance and store in instances[*]['num_lidar_pts']
     _calculate_num_points_in_gt(data_path, sit_infos_train, relative_path)
 
     # Convert to new format with data_list
@@ -552,9 +565,10 @@ def create_sit_infos(data_path: str, save_path: str = None, pkl_prefix: str = 's
     print(f'SiT info train file is saved to {filename}')
     mmengine.dump(train_data_info, filename)
 
-    # Create val info (using same data for now, split later)
-    sit_infos_val = sit_infos_train[:len(sit_infos_train)//5]  # 20% for val
-    sit_infos_train = sit_infos_train[len(sit_infos_train)//5:]  # 80% for train
+    # Create val info (using 20% of frames for validation)
+    split_idx = len(sit_infos_train) // 5
+    sit_infos_val = sit_infos_train[:split_idx]
+    sit_infos_train = sit_infos_train[split_idx:]
 
     val_data_info = {
         'metainfo': metainfo,
@@ -565,9 +579,13 @@ def create_sit_infos(data_path: str, save_path: str = None, pkl_prefix: str = 's
     print(f'SiT info val file is saved to {filename}')
     mmengine.dump(val_data_info, filename)
 
-    # Create test info (placeholder)
+    # Create test info (placeholder – test split may not exist)
     sit_infos_test = get_sit_image_info(
-        data_path, training=False, label_info=False, velodyne=True, calib=True,
+        data_path,
+        training=False,
+        label_info=False,
+        velodyne=True,
+        calib=True,
         relative_path=relative_path)
 
     test_data_info = {
@@ -580,151 +598,102 @@ def create_sit_infos(data_path: str, save_path: str = None, pkl_prefix: str = 's
     mmengine.dump(test_data_info, filename)
 
 
-def _calculate_num_points_in_gt(data_path: str, infos: List[dict], relative_path: bool = True):
-    """Calculate number of points in each ground truth box.
+def _calculate_num_points_in_gt(data_path: str,
+                                infos: List[dict],
+                                relative_path: bool = True):
+    """Calculate number of LiDAR points inside each GT box.
+
+    For the new-style info format used by Det3DDataset, we:
+      - read the point cloud from info['lidar_points']['lidar_path']
+      - read 3D boxes from info['instances'][*]['bbox_3d']
+      - write counts into instances[*]['num_lidar_pts']
 
     Args:
-        data_path (str): Path to the data directory.
-        infos (List[dict]): List of info dictionaries.
-        relative_path (bool): Whether paths are relative.
+        data_path (str): Dataset root path (contains training/velodyne).
+        infos (List[dict]): List of per-frame info dicts.
+        relative_path (bool): Whether lidar_path is relative to data_path.
     """
     from mmdet3d.structures.ops import box_np_ops
 
     root_path = Path(data_path)
 
     for info in mmengine.track_iter_progress(infos):
-        if 'annos' not in info:
-            continue
-
-        annos = info['annos']
-        if len(annos['name']) == 0:
+        if 'instances' not in info or len(info['instances']) == 0:
             continue
 
         # Load point cloud
-        pc_path = info['point_cloud']['velodyne_path']
+        pc_path = info['lidar_points']['lidar_path']
         if relative_path:
             pc_path = root_path / pc_path
 
+        if not pc_path.exists():
+            # Skip if point cloud is missing
+            continue
+
         points = np.fromfile(str(pc_path), dtype=np.float32).reshape(-1, 4)
-        points = points[:, :3]  # x, y, z
+        points_xyz = points[:, :3]
 
-        # Get calibration matrices
-        if 'calib' in info:
-            Tr_velo_to_cam = info['calib']['Tr_velo_to_cam']
-            R0_rect = info['calib']['R0_rect']
-        else:
-            # Identity matrices if no calibration
-            Tr_velo_to_cam = np.eye(4)
-            R0_rect = np.eye(4)
+        # Collect boxes in [x, y, z, w, h, l, yaw] format from instances
+        boxes = []
+        for inst in info['instances']:
+            bbox_3d = np.asarray(inst['bbox_3d'], dtype=np.float32)
+            if bbox_3d.shape[0] != 7:
+                continue
+            boxes.append(bbox_3d)
 
-        # Transform points to camera coordinates if needed
-        # For SiT, assuming points are already in appropriate coordinate system
+        if not boxes:
+            continue
 
-        num_points_in_gt = []
-        for i in range(len(annos['name'])):
-            # Get bbox in LiDAR coordinates
-            # For simplicity, assume annotations are in camera coordinates
-            # and we need to transform them to LiDAR coordinates for point counting
-            location = annos['location'][i]
-            dimensions = annos['dimensions'][i]  # h, w, l
-            rotation_y = annos['rotation_y'][i]
+        boxes = np.stack(boxes, axis=0).astype(np.float32)
 
-            # Create 3D bbox corners
-            # This is a simplified version - in practice, you'd use proper bbox operations
-            h, w, l = dimensions
-            x, y, z = location
+        # Count points per box using standard utility
+        point_indices = box_np_ops.points_in_rbbox(points_xyz, boxes)
+        counts = point_indices.sum(axis=0).astype(np.int32)
 
-            # Create rotation matrix
-            rot_mat = np.array([
-                [np.cos(rotation_y), 0, np.sin(rotation_y)],
-                [0, 1, 0],
-                [-np.sin(rotation_y), 0, np.cos(rotation_y)]
-            ])
-
-            # Create bbox corners
-            corners = np.array([
-                [l/2, h/2, w/2], [l/2, h/2, -w/2], [l/2, -h/2, -w/2], [l/2, -h/2, w/2],
-                [-l/2, h/2, w/2], [-l/2, h/2, -w/2], [-l/2, -h/2, -w/2], [-l/2, -h/2, w/2]
-            ])
-
-            # Rotate and translate
-            corners = (rot_mat @ corners.T).T + np.array([x, y, z])
-
-            # Count points inside bbox (simplified)
-            # In practice, use box_np_ops.points_in_rbbox
-            try:
-                # Assume points are in same coordinate system as bbox
-                mask = (
-                    (points[:, 0] >= corners[:, 0].min()) & (points[:, 0] <= corners[:, 0].max()) &
-                    (points[:, 1] >= corners[:, 1].min()) & (points[:, 1] <= corners[:, 1].max()) &
-                    (points[:, 2] >= corners[:, 2].min()) & (points[:, 2] <= corners[:, 2].max())
-                )
-                num_points = np.sum(mask)
-            except:
-                num_points = 0
-
-            num_points_in_gt.append(num_points)
-
-        annos['num_points_in_gt'] = np.array(num_points_in_gt, dtype=np.int32)
+        # Write back into instances
+        for inst, num in zip(info['instances'], counts):
+            inst['num_lidar_pts'] = int(num)
 
 
-def create_sit_database(data_path: str, save_path: str = None, pkl_prefix: str = 'sit',
-                       relative_path: bool = True):
+def create_sit_database(data_path: str,
+                        save_path: str = None,
+                        pkl_prefix: str = 'sit',
+                        relative_path: bool = True):
     """Create ground truth database for SiT dataset.
 
+    This is a thin wrapper around the generic `create_groundtruth_database`
+    helper so that `sit_converter.py --create-db` produces the same layout
+    as `tools/create_data.py sit ...`.
+
     Args:
-        data_path (str): Path to the data directory.
-        save_path (str, optional): Path to save the database file.
-        pkl_prefix (str): Prefix of the database file.
-        relative_path (bool): Whether to use relative paths.
+        data_path (str): Dataset root path (e.g. data/sit).
+        save_path (str, optional): Where to save database files (defaults to data_path).
+        pkl_prefix (str): Prefix of the info/db files (default: 'sit').
+        relative_path (bool): Whether to use relative paths in dbinfos.
     """
+    from tools.dataset_converters.create_gt_database import \
+        create_groundtruth_database
+
     if save_path is None:
         save_path = data_path
 
     save_path = Path(save_path)
-
-    # Load training info
     info_path = save_path / f'{pkl_prefix}_infos_train.pkl'
     if not info_path.exists():
         print(f'Info file {info_path} not found. Please create info files first.')
         return
 
-    sit_infos = mmengine.load(info_path)
-
-    # Create database similar to KITTI
-    database = {}
-
-    for info in mmengine.track_iter_progress(sit_infos):
-        if 'annos' not in info:
-            continue
-
-        annos = info['annos']
-        for i, name in enumerate(annos['name']):
-            if name not in database:
-                database[name] = []
-
-            # Extract point cloud within bbox (simplified)
-            # In practice, this would extract points within each 3D bbox
-            db_info = {
-                'name': name,
-                'path': info['point_cloud']['velodyne_path'],
-                'image_idx': info['image']['image_idx'],
-                'gt_idx': i,
-                'box3d_lidar': np.concatenate([
-                    annos['location'][i],
-                    annos['dimensions'][i],
-                    annos['rotation_y'][i][None]
-                ]),
-                'num_points_in_gt': annos['num_points_in_gt'][i],
-                'difficulty': 0,  # Placeholder
-            }
-
-            database[name].append(db_info)
-
-    # Save database
-    db_file = save_path / f'{pkl_prefix}_dbinfos_train.pkl'
-    print(f'SiT database file is saved to {db_file}')
-    mmengine.dump(database, db_file)
+    db_info_save_path = save_path / f'{pkl_prefix}_dbinfos_train.pkl'
+    database_save_path = save_path / f'{pkl_prefix}_gt_database'
+    create_groundtruth_database(
+        'SiTDataset',
+        str(data_path),
+        pkl_prefix,
+        info_path=str(info_path),
+        used_classes=['Pedestrian', 'Car'],
+        database_save_path=str(database_save_path),
+        db_info_save_path=str(db_info_save_path),
+        relative_path=relative_path)
 
 
 def convert_sequence(sit_root: str, output_root: str, sequence: str) -> bool:

@@ -269,33 +269,41 @@ def semantickitti_data_prep(info_prefix, out_dir):
 def sit_data_prep(root_path, info_prefix, out_dir):
     """Prepare data related to SiT dataset.
 
+    The normalized SiT layout mirrors KITTI:
+
+        root_path/
+          ├── training/
+          │   ├── velodyne/
+          │   ├── label_2/
+          │   ├── calib/
+          │   └── image_2/
+          ├── sit_infos_*.pkl
+          └── sit_dbinfos_train.pkl
+
     Args:
-        root_path (str): Path of dataset root.
-        info_prefix (str): The prefix of info filenames.
-        out_dir (str): Output directory of the groundtruth database info.
+        root_path (str): Path of dataset root (e.g. ./data/sit).
+        info_prefix (str): The prefix of info filenames (e.g. 'sit').
+        out_dir (str): Output directory for info and database files
+            (usually the same as root_path).
     """
-    # The actual data is in root_path/training/training/, but create_sit_infos
-    # expects data_path/training/velodyne/, so we pass root_path/training
-    # This way it will look in root_path/training/training/velodyne/
-    data_path = osp.join(root_path, 'training')
-    
-    # Create info files
+    # create_sit_infos expects data_path/training/velodyne/
+    # so we pass the dataset root (root_path), which contains `training/`.
+    data_path = root_path
+
+    # Create info files (sit_infos_train/val/test.pkl) under out_dir
     sit.create_sit_infos(data_path, save_path=out_dir, pkl_prefix=info_prefix)
 
-    # Create groundtruth database
-    # data_path is ./data/sit/training, info file is at ./data/sit/sit_infos_train.pkl
-    # dataset_cfg sets data_root = data_path (./data/sit/training)
-    # So we need ann_file = ../sit_infos_train.pkl to resolve to ./data/sit/sit_infos_train.pkl
-    info_file_relative = osp.join('..', f'{info_prefix}_infos_train.pkl')
+    # Create groundtruth database and dbinfos using the generic helper
+    info_file = osp.join(out_dir, f'{info_prefix}_infos_train.pkl')
     db_info_save_path = osp.join(out_dir, f'{info_prefix}_dbinfos_train.pkl')
     create_groundtruth_database(
         'SiTDataset',
-        data_path,  # ./data/sit/training
+        data_path,            # ./data/sit
         info_prefix,
-        info_file_relative,  # ../sit_infos_train.pkl (relative to data_path)
+        info_path=info_file,  # ./data/sit/sit_infos_train.pkl
         used_classes=['Pedestrian', 'Car'],
-        database_save_path=out_dir,
-        db_info_save_path=db_info_save_path)  # Explicitly set where to save the database info file
+        database_save_path=osp.join(out_dir, f'{info_prefix}_gt_database'),
+        db_info_save_path=db_info_save_path)
 
 
 parser = argparse.ArgumentParser(description='Data converter arg parser')

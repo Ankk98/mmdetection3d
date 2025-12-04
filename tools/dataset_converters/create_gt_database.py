@@ -220,18 +220,15 @@ def create_groundtruth_database(dataset_class_name,
 
     elif dataset_class_name == 'SiTDataset':
         backend_args = None
-        # data_path is ./data/sit/training, actual files are at ./data/sit/training/training/velodyne/
-        # info file paths are training/velodyne/0.bin
-        # So: data_root = ./data/sit/training, data_prefix = '' (empty)
-        # This gives: ./data/sit/training + training/velodyne/0.bin = ./data/sit/training/training/velodyne/0.bin ✓
-        # But info file is at ./data/sit/sit_infos_train.pkl, so we need to handle that separately
-        # Actually, let's keep data_root as data_path for point clouds, but handle info file path correctly
-        # The info_path parameter should be the full path or relative to data_path's parent
+        # Normalized SiT layout (mirrors KITTI):
+        #   data_path/
+        #     ├── training/velodyne/
+        #     └── ...
         dataset_cfg.update(
             test_mode=False,
-            data_root=data_path,  # ./data/sit/training (for point cloud files)
+            data_root=data_path,
             data_prefix=dict(
-                pts='', img='', sweeps=''),  # Empty prefix, paths in info already include training/velodyne/
+                pts='training/velodyne', img='training/image_2', sweeps=''),
             modality=dict(
                 use_lidar=True,
                 use_depth=False,
@@ -251,20 +248,9 @@ def create_groundtruth_database(dataset_class_name,
                     with_label_3d=True,
                     backend_args=backend_args)
             ])
-        # Override ann_file to handle relative paths correctly
-        # The dataset will join data_root with ann_file, so we need to make ann_file
-        # relative to data_root, or use an absolute path
+        # Use the provided info_path directly; it can be absolute or relative
         if info_path:
-            if osp.isabs(info_path):
-                dataset_cfg['ann_file'] = info_path
-            elif info_path.startswith('../'):
-                # Resolve relative to data_path's parent and make it absolute
-                resolved_path = osp.normpath(osp.join(data_path, info_path))
-                dataset_cfg['ann_file'] = osp.abspath(resolved_path)
-            else:
-                # Relative path, join with data_path's parent and make absolute
-                resolved_path = osp.join(osp.dirname(data_path), info_path)
-                dataset_cfg['ann_file'] = osp.abspath(resolved_path)
+            dataset_cfg['ann_file'] = info_path
 
     dataset = DATASETS.build(dataset_cfg)
 
