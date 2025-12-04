@@ -290,17 +290,26 @@ def create_imagesets(output_root: str, sequences: List[str], split_ratio: Tuple[
         sequences (List[str]): List of sequence names.
         split_ratio (tuple): Train/val/test split ratios.
     """
-    # Collect all frame indices
-    all_frames = []
-
-    for seq in sequences:
-        seq_dir = osp.join(output_root, 'training', 'velodyne')
-        if osp.exists(seq_dir):
-            bin_files = [f for f in os.listdir(seq_dir) if f.endswith('.bin')]
-            frame_indices = sorted([int(f.split('.')[0]) for f in bin_files])
-            # Add sequence prefix to avoid conflicts
-            prefixed_frames = [f"{seq}_{idx}" for idx in frame_indices]
-            all_frames.extend(prefixed_frames)
+    # Collect all frame indices once from the normalized KITTI-style layout:
+    #   output_root/training/velodyne/*.bin
+    #
+    # NOTE:
+    #   Earlier versions incorrectly iterated over `sequences` while always
+    #   reading from the same `training/velodyne` directory and prefixing each
+    #   frame index with the sequence name. This resulted in the same frames
+    #   being duplicated for every sequence (e.g. `seqA_000001`, `seqB_000001`)
+    #   even though they all pointed to the same underlying `.bin` files.
+    #   Since the conversion step already normalizes all sequences into a
+    #   single `training/velodyne` folder, we should only scan that folder
+    #   once and use the raw frame indices.
+    all_frames: List[str] = []
+    seq_dir = osp.join(output_root, 'training', 'velodyne')
+    if osp.exists(seq_dir):
+        bin_files = [f for f in os.listdir(seq_dir) if f.endswith('.bin')]
+        # Keep the filename stem as-is (e.g. '000123') instead of casting to int
+        # so that any zero-padding is preserved in the ImageSets files.
+        frame_ids = sorted([osp.splitext(f)[0] for f in bin_files])
+        all_frames.extend(frame_ids)
 
     # Split frames
     n_frames = len(all_frames)

@@ -161,5 +161,8 @@ val_evaluator = dict(
     ann_file=data_root + 'sit_infos_val.pkl',
     metric='bbox',
     backend_args=backend_args)
-
-test_evaluator = val_evaluator
+test_evaluator = dict(
+    type='KittiMetric',
+    ann_file=data_root + 'sit_infos_test.pkl',
+    metric='bbox',
+    backend_args=backend_args)
