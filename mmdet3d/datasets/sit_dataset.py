@@ -53,15 +53,23 @@ class SiTDataset(KittiDataset):
     def __init__(self,
                  data_root: str,
                  ann_file: str,
-                 pipeline: List[Union[dict, Callable]] = [],
-                 modality: dict = dict(use_lidar=True),
+                 pipeline: List[Union[dict, Callable]] | None = None,
+                 modality: dict | None = None,
                  default_cam_key: str = 'CAM2',
                  load_type: str = 'frame_based',
                  box_type_3d: str = 'LiDAR',
                  filter_empty_gt: bool = True,
                  test_mode: bool = False,
-                 pcd_limit_range: List[float] = [-50, -50, -5, 50, 50, 3],
+                 pcd_limit_range: List[float] | None = None,
                  **kwargs) -> None:
+
+        # Avoid mutable default arguments by creating fresh instances here.
+        if pipeline is None:
+            pipeline = []
+        if modality is None:
+            modality = dict(use_lidar=True)
+        if pcd_limit_range is None:
+            pcd_limit_range = [-50, -50, -5, 50, 50, 3]
 
         # Call parent constructor with adjusted parameters
         super().__init__(
