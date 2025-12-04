@@ -623,7 +623,10 @@ class KittiMetric(BaseMetric):
                 box3d_camera=np.zeros([0, 7]),
                 box3d_lidar=np.zeros([0, 7]),
                 scores=np.zeros([0]),
-                label_preds=np.zeros([0, 4]),
+                # Keep label_preds 1D even in the empty case so its shape
+                # matches the non-empty branch (where labels is 1D) and the
+                # later `valid_inds.sum() == 0` branch below.
+                label_preds=np.zeros([0]),
                 sample_idx=sample_idx)
         # Here default used 'CAM2' to compute metric. If you want to
         # use another camera, please modify it.
