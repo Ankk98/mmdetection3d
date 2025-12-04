@@ -290,8 +290,10 @@ def sit_data_prep(root_path, info_prefix, out_dir):
     # so we pass the dataset root (root_path), which contains `training/`.
     data_path = root_path
 
-    # Create info files (sit_infos_train/val/test.pkl) under out_dir
-    sit.create_sit_infos(data_path, save_path=out_dir, pkl_prefix=info_prefix)
+    # Create info files (sit_infos_train/val/test.pkl) under out_dir using the
+    # same default split convention as :func:`create_imagesets`
+    sit.create_sit_infos(
+        data_path, save_path=out_dir, pkl_prefix=info_prefix)
 
     # Create groundtruth database and dbinfos using the generic helper.
     # For SiT we always use `<info_prefix>_infos_train.pkl` relative to data_root,

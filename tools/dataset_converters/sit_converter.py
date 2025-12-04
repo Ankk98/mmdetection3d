@@ -340,7 +340,7 @@ def get_sit_image_info(data_path: str,
                        label_info: bool = True,
                        velodyne: bool = True,
                        calib: bool = False,
-                       image_ids: List[int] = None,
+                       image_ids: List[str] = None,
                        relative_path: bool = True,
                        with_imageshape: bool = True):
     """Get SiT image info similar to KITTI format.
@@ -370,33 +370,50 @@ def get_sit_image_info(data_path: str,
             velodyne_dir = root_path / 'testing' / 'velodyne'
 
         if velodyne_dir.exists():
+            # Preserve the original zero-padded string frame IDs (e.g. "000001")
+            # instead of converting them to integers. Converting to int would
+            # drop leading zeros and later generate wrong file paths such as
+            # "training/velodyne/1.bin" instead of "training/velodyne/000001.bin".
             bin_files = [f for f in os.listdir(velodyne_dir) if f.endswith('.bin')]
-            image_ids = sorted([int(f.split('.')[0]) for f in bin_files])
+            image_ids = sorted([osp.splitext(f)[0] for f in bin_files])
         else:
             image_ids = []
 
-    def map_func(idx):
+    def map_func(frame_id):
         info = {}
+
+        # Normalize frame id to string and integer forms. The string keeps the
+        # exact zero-padding used on disk (e.g. "000001"), while the integer is
+        # convenient for code that expects a numeric index in metadata.
+        frame_id_str = str(frame_id)
+        try:
+            frame_id_int = int(frame_id_str)
+        except ValueError:
+            # Fallback: if the frame id cannot be parsed as int, just keep 0.
+            # This should not happen for normal SiT/KITTI-style IDs.
+            frame_id_int = 0
 
         # Point cloud info
         if velodyne:
             pc_info = {'num_pts_feats': 4}
             if training:
-                pc_info['lidar_path'] = f'training/velodyne/{idx}.bin'
+                pc_info['lidar_path'] = f'training/velodyne/{frame_id_str}.bin'
             else:
-                pc_info['lidar_path'] = f'testing/velodyne/{idx}.bin'
+                pc_info['lidar_path'] = f'testing/velodyne/{frame_id_str}.bin'
             info['lidar_points'] = pc_info
 
         # Image info (placeholder)
         if with_imageshape:
             image_info = {
-                'image_idx': idx,
+                # Keep a numeric index for compatibility with downstream tools
+                # while preserving zero-padded strings in file paths.
+                'image_idx': frame_id_int,
                 'image_shape': np.array([1024, 1024], dtype=np.int32)  # Placeholder shape
             }
             if training:
-                image_info['image_path'] = f'training/image_2/{idx}.png'
+                image_info['image_path'] = f'training/image_2/{frame_id_str}.png'
             else:
-                image_info['image_path'] = f'testing/image_2/{idx}.png'
+                image_info['image_path'] = f'testing/image_2/{frame_id_str}.png'
             info['image'] = image_info
 
         # Calibration info (placeholder)
@@ -415,7 +432,7 @@ def get_sit_image_info(data_path: str,
         # when a frame has no labels.
         info['instances'] = []
         if label_info and training:
-            label_path = root_path / 'training' / 'label_2' / f'{idx}.txt'
+            label_path = root_path / 'training' / 'label_2' / f'{frame_id_str}.txt'
             if label_path.exists():
                 annotations = get_kitti_style_annotations(str(label_path))
                 if annotations and len(annotations['name']) > 0:
@@ -532,7 +549,9 @@ def convert_annos_to_instances(annos: dict) -> list:
 def create_sit_infos(data_path: str,
                      save_path: str = None,
                      pkl_prefix: str = 'sit',
-                     relative_path: bool = True):
+                     relative_path: bool = True,
+                     split_ratio: Tuple[float, float, float] = (0.7, 0.15,
+                                                                0.15)):
     """Create info file of SiT dataset.
 
     Args:
@@ -540,6 +559,11 @@ def create_sit_infos(data_path: str,
         save_path (str, optional): Path to save the info file.
         pkl_prefix (str): Prefix of the info file.
         relative_path (bool): Whether to use relative paths.
+        split_ratio (tuple): Train/val/test split ratios. Only the
+            train/val portions are used here, but the semantics should
+            match :func:`create_imagesets` so that the frame indices in
+            ``train.txt`` / ``val.txt`` align with the samples in
+            ``*_infos_train.pkl`` / ``*_infos_val.pkl``.
     """
     if save_path is None:
         save_path = data_path
@@ -564,10 +588,15 @@ def create_sit_infos(data_path: str,
         calib=True,
         relative_path=relative_path)
 
-    # Split into train / val BEFORE saving so that train really has 80%
-    split_idx = len(full_infos) // 5  # 20% for val
-    sit_infos_val = full_infos[:split_idx]
-    sit_infos_train = full_infos[split_idx:]
+    # Split into train / val BEFORE saving so that train/val splits match the
+    # ImageSets split produced by :func:`create_imagesets`, which uses the
+    # same ``split_ratio`` convention.
+    n_samples = len(full_infos)
+    n_train = int(n_samples * split_ratio[0])
+    n_val = int(n_samples * split_ratio[1])
+
+    sit_infos_train = full_infos[:n_train]
+    sit_infos_val = full_infos[n_train:n_train + n_val]
 
     # Calculate num_points_in_gt per instance on the TRAIN split only
     _calculate_num_points_in_gt(data_path, sit_infos_train, relative_path)
@@ -846,7 +875,10 @@ def main():
         # Create info files
         if args.create_info:
             print("Creating info files...")
-            create_sit_infos(args.output_root, pkl_prefix='sit')
+            create_sit_infos(
+                args.output_root,
+                pkl_prefix='sit',
+                split_ratio=tuple(args.split_ratio))
 
         # Create database files
         if args.create_db:
