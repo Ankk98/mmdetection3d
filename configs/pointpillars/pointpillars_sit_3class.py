@@ -93,9 +93,16 @@ model = dict(
     middle_encoder=dict(
         type='PointPillarsScatter',
         in_channels=64,
-        # Use full grid size to match voxelization (100 m / 0.16 m = 625)
-        # and avoid out-of-bounds indices in the scatter step.
-        output_shape=[625, 625]),
+        # Canvas size must be compatible with the backbone/neck strides.
+        # The voxel grid along X/Y is 625 (= 100 / 0.16), which is not
+        # divisible by 8 (2 * 2 * 2 backbone strides). This causes the
+        # three FPN paths to upsample to slightly different spatial sizes
+        # (e.g. 313 vs 314) and breaks the torch.cat in SECONDFPN.
+        #
+        # Use the next multiple of 8 that is >= 625, so all paths align
+        # while still covering the full voxelized area (extra rows/cols
+        # stay empty as there are no voxels there).
+        output_shape=[632, 632]),
     bbox_head=dict(
         num_classes=2,  # Pedestrian, Car
         anchor_generator=dict(
