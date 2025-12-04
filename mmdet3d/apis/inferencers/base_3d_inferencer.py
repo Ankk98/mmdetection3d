@@ -164,9 +164,36 @@ class Base3DInferencer(BaseInferencer):
 
         # Fallback: lazily build the test dataset to fetch its metainfo.
         if dataset_meta is None:
-            test_dataset_cfg = deepcopy(cfg.test_dataloader.dataset)
-            test_dataset_cfg['lazy_init'] = True
-            dataset_meta = DATASETS.build(test_dataset_cfg).metainfo
+            try:
+                # ``cfg`` may be a Config object or a plain dict.
+                test_dataloader = None
+                if hasattr(cfg, 'test_dataloader'):
+                    test_dataloader = cfg.test_dataloader
+                elif isinstance(cfg, dict):
+                    test_dataloader = cfg.get('test_dataloader', None)
+
+                if test_dataloader is not None:
+                    dataset_cfg = test_dataloader.get('dataset')
+                    if dataset_cfg is not None:
+                        test_dataset_cfg = deepcopy(dataset_cfg)
+                        # lazy init. We only need the metainfo.
+                        test_dataset_cfg['lazy_init'] = True
+                        dataset_meta = DATASETS.build(
+                            test_dataset_cfg).metainfo
+            except Exception as exc:  # noqa: BLE001
+                # If anything goes wrong here, fall back to an empty dict
+                # instead of failing visualization entirely.
+                print_log(
+                    'Failed to build test dataset for visualizer metadata '
+                    f'fallback: {exc}',
+                    logger='current',
+                    level=logging.WARNING,
+                )
+
+        # Ensure we always set *some* dataset_meta so that downstream code
+        # that assumes a mapping does not crash.
+        if dataset_meta is None:
+            dataset_meta = {}
 
         visualizer.dataset_meta = dataset_meta
         return visualizer
