@@ -160,9 +160,15 @@ val_evaluator = dict(
     type='KittiMetric',
     ann_file=data_root + 'sit_infos_val.pkl',
     metric='bbox',
+    # SiT uses LiDAR-only placeholders for camera geometry. Running the
+    # compiled KITTI evaluation on such data can lead to low-level
+    # segmentation faults. Enable format_only to skip the native eval
+    # while still dumping results in KITTI format if needed.
+    format_only=True,
     backend_args=backend_args)
 test_evaluator = dict(
     type='KittiMetric',
     ann_file=data_root + 'sit_infos_test.pkl',
     metric='bbox',
+    format_only=True,
     backend_args=backend_args)

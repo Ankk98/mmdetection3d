@@ -137,7 +137,11 @@ class KittiMetric(BaseMetric):
                             instance.get('occluded', 0))
                         kitti_annos['alpha'].append(
                             instance.get('alpha', 0.0))
-                        kitti_annos['bbox'].append(instance['bbox'])
+                        # Some derived datasets may omit 2D bbox in their
+                        # per-instance dicts. Fall back to a zero box so that
+                        # conversion/evaluation code can still run.
+                        kitti_annos['bbox'].append(
+                            instance.get('bbox', [0.0, 0.0, 0.0, 0.0]))
                         kitti_annos['location'].append(
                             instance['bbox_3d'][:3])
                         kitti_annos['dimensions'].append(

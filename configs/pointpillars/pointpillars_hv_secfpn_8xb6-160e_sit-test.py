@@ -115,6 +115,10 @@ model = dict(
     bbox_head=dict(
         num_classes=2,  # Pedestrian, Car
         anchor_generator=dict(
+            ranges=[
+                [-50, -50, -0.6, 50, 50, -0.6],  # Pedestrian range
+                [-50, -50, -0.6, 50, 50, -0.6],  # Car range
+            ],
             sizes=[
                 [0.8, 0.6, 1.73],  # Pedestrian (adjusted for SiT)
                 [1.76, 0.6, 1.73], # Car (adjusted for SiT)
