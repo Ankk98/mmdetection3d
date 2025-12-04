@@ -174,3 +174,10 @@ test_evaluator = dict(
     format_only=True,
     submission_prefix=data_root + 'kitti_test_pred',
     backend_args=backend_args)
+
+# Visualization configuration so demos/inferencers can create a visualizer.
+vis_backends = [dict(type='LocalVisBackend')]
+visualizer = dict(
+    type='Det3DLocalVisualizer',
+    vis_backends=vis_backends,
+    name='visualizer')

@@ -1,5 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-from typing import Callable, List, Union
+from typing import Callable, List, Optional, Union
 
 import os.path as osp
 import numpy as np
@@ -53,14 +53,14 @@ class SiTDataset(KittiDataset):
     def __init__(self,
                  data_root: str,
                  ann_file: str,
-                 pipeline: List[Union[dict, Callable]] | None = None,
-                 modality: dict | None = None,
+                 pipeline: Optional[List[Union[dict, Callable]]] = None,
+                 modality: Optional[dict] = None,
                  default_cam_key: str = 'CAM2',
                  load_type: str = 'frame_based',
                  box_type_3d: str = 'LiDAR',
                  filter_empty_gt: bool = True,
                  test_mode: bool = False,
-                 pcd_limit_range: List[float] | None = None,
+                 pcd_limit_range: Optional[List[float]] = None,
                  **kwargs) -> None:
 
         # Avoid mutable default arguments by creating fresh instances here.

@@ -148,12 +148,15 @@ class KittiMetric(BaseMetric):
                         # conversion/evaluation code can still run.
                         kitti_annos['bbox'].append(
                             instance.get('bbox', [0.0, 0.0, 0.0, 0.0]))
-                        kitti_annos['location'].append(
-                            instance['bbox_3d'][:3])
-                        kitti_annos['dimensions'].append(
-                            instance['bbox_3d'][3:6])
-                        kitti_annos['rotation_y'].append(
-                            instance['bbox_3d'][6])
+                        # Some derived datasets may also omit 3D boxes; in that
+                        # case, fall back to a zero box so evaluation code can
+                        # still run, even though the metrics will be degenerate.
+                        bbox_3d = instance.get('bbox_3d',
+                                               [0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                                0.0])
+                        kitti_annos['location'].append(bbox_3d[:3])
+                        kitti_annos['dimensions'].append(bbox_3d[3:6])
+                        kitti_annos['rotation_y'].append(bbox_3d[6])
                         kitti_annos['score'].append(instance.get('score', 1.0))
                     for name in kitti_annos:
                         kitti_annos[name] = np.array(kitti_annos[name])

@@ -5,6 +5,7 @@ from os import path as osp
 import mmcv
 import mmengine
 import numpy as np
+import torch
 from mmcv.ops import roi_align
 from mmdet.evaluation import bbox_overlaps
 from mmengine import print_log, track_iter_progress
@@ -13,6 +14,40 @@ from pycocotools.coco import COCO
 
 from mmdet3d.registry import DATASETS
 from mmdet3d.structures.ops import box_np_ops as box_np_ops
+
+
+def _to_numpy(array_like):
+    """Convert various point/box containers to a NumPy array.
+
+    This helper is aware of:
+    - NumPy arrays (returned as-is)
+    - PyTorch tensors (converted via ``detach().cpu().numpy()``)
+    - MMDet3D `BasePoints` / `BaseInstance3DBoxes` (accessing their
+      underlying ``.tensor`` attribute)
+    - Objects exposing a ``.numpy()`` method
+    For any other array-like, it falls back to ``np.asarray``.
+    """
+    if isinstance(array_like, np.ndarray):
+        return array_like
+
+    # PyTorch tensor (common for pipelines)
+    if isinstance(array_like, torch.Tensor):
+        return array_like.detach().cpu().numpy()
+
+    # MMDet3D `BasePoints` / boxes often expose a `.tensor` attribute.
+    if hasattr(array_like, 'tensor'):
+        tensor = array_like.tensor
+        if isinstance(tensor, torch.Tensor):
+            return tensor.detach().cpu().numpy()
+        if hasattr(tensor, 'numpy'):
+            return tensor.numpy()
+
+    # Generic objects with a `.numpy()` method.
+    if hasattr(array_like, 'numpy'):
+        return array_like.numpy()
+
+    # Fallback: try NumPy conversion.
+    return np.asarray(array_like)
 
 
 def _poly2mask(mask_ann, img_h, img_w):
@@ -278,13 +313,15 @@ def create_groundtruth_database(dataset_class_name,
         image_idx = example['sample_idx']
         # Handle both old format (points) and new format (inputs['points'])
         if 'points' in example:
-            points = example['points'].numpy() if hasattr(example['points'], 'numpy') else example['points']
+            points = _to_numpy(example['points'])
         elif 'inputs' in example and 'points' in example['inputs']:
-            points = example['inputs']['points'].numpy() if hasattr(example['inputs']['points'], 'numpy') else example['inputs']['points']
+            points = _to_numpy(example['inputs']['points'])
         else:
-            raise KeyError(f"Could not find 'points' in example. Available keys: {list(example.keys())}")
-        # Handle both tensor and numpy array for gt_bboxes_3d
-        gt_boxes_3d = annos['gt_bboxes_3d'].numpy() if hasattr(annos['gt_bboxes_3d'], 'numpy') else annos['gt_bboxes_3d']
+            raise KeyError(
+                "Could not find 'points' in example. "
+                f'Available keys: {list(example.keys())}')
+        # Ensure gt_boxes_3d is a NumPy array (handles BaseInstance3DBoxes, tensors, etc.)
+        gt_boxes_3d = _to_numpy(annos['gt_bboxes_3d'])
         names = [dataset.metainfo['classes'][i] for i in annos['gt_labels_3d']]
         group_dict = dict()
         if 'group_ids' in annos:
@@ -450,22 +487,15 @@ class GTDatabaseCreater:
         image_idx = example['sample_idx']
         # Handle both old format (points) and new format (inputs['points'])
         if 'points' in example:
-            points = (example['points'].numpy()
-                      if hasattr(example['points'], 'numpy') else
-                      example['points'])
+            points = _to_numpy(example['points'])
         elif 'inputs' in example and 'points' in example['inputs']:
-            pts_field = example['inputs']['points']
-            points = (pts_field.numpy()
-                      if hasattr(pts_field, 'numpy') else pts_field)
+            points = _to_numpy(example['inputs']['points'])
         else:
             raise KeyError(
                 "Could not find 'points' in example. "
                 f'Available keys: {list(example.keys())}')
-        # Handle both tensor and numpy array for gt_bboxes_3d
-        gt_bboxes_field = annos['gt_bboxes_3d']
-        gt_boxes_3d = (gt_bboxes_field.numpy()
-                       if hasattr(gt_bboxes_field, 'numpy') else
-                       gt_bboxes_field)
+        # Ensure gt_boxes_3d is a NumPy array (handles BaseInstance3DBoxes, tensors, etc.)
+        gt_boxes_3d = _to_numpy(annos['gt_bboxes_3d'])
         names = [
             self.dataset.metainfo['classes'][i] for i in annos['gt_labels_3d']
         ]
