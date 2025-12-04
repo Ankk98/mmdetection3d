@@ -127,16 +127,24 @@ class KittiMetric(BaseMetric):
                     for instance in annos['instances']:
                         label = instance['bbox_label']
                         kitti_annos['name'].append(label2cat[label])
-                        kitti_annos['truncated'].append(instance['truncated'])
-                        kitti_annos['occluded'].append(instance['occluded'])
-                        kitti_annos['alpha'].append(instance['alpha'])
+                        # Some datasets (e.g. SiT) may omit KITTI-specific
+                        # camera fields like truncated/occluded/alpha/score
+                        # from their per-instance dicts. Fall back to sensible
+                        # defaults so evaluation can still run.
+                        kitti_annos['truncated'].append(
+                            instance.get('truncated', 0.0))
+                        kitti_annos['occluded'].append(
+                            instance.get('occluded', 0))
+                        kitti_annos['alpha'].append(
+                            instance.get('alpha', 0.0))
                         kitti_annos['bbox'].append(instance['bbox'])
-                        kitti_annos['location'].append(instance['bbox_3d'][:3])
+                        kitti_annos['location'].append(
+                            instance['bbox_3d'][:3])
                         kitti_annos['dimensions'].append(
                             instance['bbox_3d'][3:6])
                         kitti_annos['rotation_y'].append(
                             instance['bbox_3d'][6])
-                        kitti_annos['score'].append(instance['score'])
+                        kitti_annos['score'].append(instance.get('score', 1.0))
                     for name in kitti_annos:
                         kitti_annos[name] = np.array(kitti_annos[name])
                 data_annos[i]['kitti_annos'] = kitti_annos

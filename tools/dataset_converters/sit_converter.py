@@ -528,13 +528,16 @@ def convert_annos_to_instances(annos: dict) -> list:
         instance = {
             'bbox': annos['bbox'][i].tolist(),
             'bbox_label': class_mapping.get(annos['name'][i], -1),
+            # KITTI `dimensions` are [h, w, l]. For LiDAR boxes we expect
+            # [size_x, size_y, size_z] = [length, width, height], with z
+            # vertical. Map explicitly as [l, w, h] to avoid transposed boxes.
             'bbox_3d': [
                 annos['location'][i][0],  # x
                 annos['location'][i][1],  # y
                 annos['location'][i][2],  # z
-                annos['dimensions'][i][1],  # w
-                annos['dimensions'][i][0],  # h
-                annos['dimensions'][i][2],  # l
+                annos['dimensions'][i][2],  # length -> size_x
+                annos['dimensions'][i][1],  # width  -> size_y
+                annos['dimensions'][i][0],  # height -> size_z
                 annos['rotation_y'][i]     # yaw
             ],
             'bbox_3d_isvalid': True,
