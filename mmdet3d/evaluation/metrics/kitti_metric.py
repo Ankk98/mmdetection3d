@@ -354,8 +354,25 @@ class KittiMetric(BaseMetric):
             info = self.data_infos[sample_idx]
             # Here default used 'CAM2' to compute metric. If you want to
             # use another camera, please modify it.
-            image_shape = (info['images'][self.default_cam_key]['height'],
-                           info['images'][self.default_cam_key]['width'])
+            #
+            # Some non-KITTI datasets (e.g. SiT) use a simplified info dict
+            # without the nested ``images[CAM2]`` structure and instead store
+            # a flat ``image`` / ``calib`` dictionary. In that case, fall back
+            # to those fields so that evaluation can still proceed.
+            if 'images' in info and self.default_cam_key in info['images']:
+                image_shape = (
+                    info['images'][self.default_cam_key]['height'],
+                    info['images'][self.default_cam_key]['width'])
+            elif 'image' in info:
+                img_info = info['image']
+                img_shape = img_info.get('image_shape', np.array([0, 0]))
+                # `image_shape` is expected to be (H, W).
+                image_shape = (int(img_shape[0]), int(img_shape[1]))
+            else:
+                # As a last resort, use a dummy resolution. This should not
+                # normally happen, but avoids hard crashes on partially
+                # populated info dicts.
+                image_shape = (0, 0)
             box_dict = self.convert_valid_bboxes(pred_dicts, info)
             anno = {
                 'name': [],
@@ -600,13 +617,35 @@ class KittiMetric(BaseMetric):
                 sample_idx=sample_idx)
         # Here default used 'CAM2' to compute metric. If you want to
         # use another camera, please modify it.
-        lidar2cam = np.array(
-            info['images'][self.default_cam_key]['lidar2cam']).astype(
-                np.float32)
-        P2 = np.array(info['images'][self.default_cam_key]['cam2img']).astype(
-            np.float32)
-        img_shape = (info['images'][self.default_cam_key]['height'],
-                     info['images'][self.default_cam_key]['width'])
+        #
+        # Support both the standard KITTI-style ``images[CAM2]`` layout and
+        # simplified layouts used by some derived datasets (e.g. SiT) that
+        # store calibration under ``calib`` and image metadata under ``image``.
+        if 'images' in info and self.default_cam_key in info['images']:
+            cam_info = info['images'][self.default_cam_key]
+            lidar2cam = np.array(cam_info['lidar2cam']).astype(np.float32)
+            P2 = np.array(cam_info['cam2img']).astype(np.float32)
+            img_shape = (cam_info['height'], cam_info['width'])
+        elif 'calib' in info and 'image' in info:
+            calib = info['calib']
+            img_info = info['image']
+            # SiT-style placeholder calibration uses keys compatible with KITTI:
+            #   - 'Tr_velo_to_cam'  ~ lidar2cam (4x4)
+            #   - 'P2'              ~ cam2img (3x4)
+            lidar2cam = np.array(calib.get('Tr_velo_to_cam',
+                                           np.eye(4))).astype(np.float32)
+            P2 = np.array(calib.get('P2',
+                                    np.eye(3, 4))).astype(np.float32)
+            img_shape_arr = img_info.get('image_shape',
+                                         np.array([0, 0], dtype=np.int32))
+            img_shape = (int(img_shape_arr[0]), int(img_shape_arr[1]))
+        else:
+            # Fallback to identity transforms and zero image size to avoid
+            # crashing on partially populated info dicts. This will typically
+            # filter out all boxes in `valid_cam_inds`.
+            lidar2cam = np.eye(4, dtype=np.float32)
+            P2 = np.eye(3, 4, dtype=np.float32)
+            img_shape = (0, 0)
         P2 = box_preds.tensor.new_tensor(P2)
 
         if isinstance(box_preds, LiDARInstance3DBoxes):
