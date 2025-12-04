@@ -162,12 +162,36 @@ class SiTDataset(KittiDataset):
             ann_info['gt_bboxes_3d'] = np.zeros((0, 7), dtype=np.float32)
             ann_info['gt_labels_3d'] = np.zeros(0, dtype=np.int64)
             # For empty GT, `instances` should be an empty list rather than
-            # missing entirely to stay consistent with `Det3DDataset`.
-            ann_info['instances'] = info.get('instances', [])
+            # reusing any original `info['instances']` entries that were
+            # filtered out upstream. This keeps the contract aligned with
+            # `Det3DDataset.parse_ann_info`, where no valid instances remain.
+            ann_info['instances'] = []
         else:
             # Filter out "dontcare"/unknown categories where labels are -1,
-            # matching the behavior in `KittiDataset.parse_ann_info`.
+            # matching the behavior in `KittiDataset.parse_ann_info`.  The
+            # base `_remove_dontcare` implementation only applies the mask to
+            # ndarray fields and leaves the `instances` list untouched, which
+            # would desynchronize it from `gt_bboxes_3d` / `gt_labels_3d`.
+            # We therefore compute the mask up-front and manually filter
+            # `instances` afterwards.
+            instances = ann_info.get('instances', None)
+            labels = ann_info.get('gt_labels_3d', None)
+            filter_mask = None
+            if instances is not None and labels is not None:
+                filter_mask = labels > -1
+
             ann_info = self._remove_dontcare(ann_info)
+
+            if filter_mask is not None and instances is not None:
+                if len(instances) == len(filter_mask):
+                    ann_info['instances'] = [
+                        inst for inst, keep in zip(instances, filter_mask)
+                        if keep
+                    ]
+                else:
+                    # Length mismatch is unexpected; fall back to unfiltered
+                    # instances to avoid silent truncation in this edge case.
+                    ann_info['instances'] = instances
 
         # Convert numpy array to LiDARInstance3DBoxes for LiDAR-only dataset.
         # SiT uses LiDAR coordinates directly, so no camera-to-lidar transform
