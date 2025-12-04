@@ -1,6 +1,7 @@
 # dataset settings
 dataset_type = 'SiTDataset'
-data_root = 'data/sit/'
+data_root = 'data/sit/training/'  # Point cloud files are at data/sit/training/training/velodyne/
+data_root_for_info = 'data/sit/'  # Info files are at data/sit/
 class_names = ['Pedestrian', 'Car']
 point_cloud_range = [-50, -50, -5, 50, 50, 3]  # Based on SiT data analysis
 input_modality = dict(use_lidar=True, use_camera=False)
@@ -8,9 +9,17 @@ metainfo = dict(classes=class_names)
 backend_args = None
 
 # Data augmentation database
+# NOTE:
+# - `tools/create_data.py sit ...` creates the GT database under
+#   `data/sit/training/sit_gt_database/`
+# - The dbinfo pkl is saved as `data/sit/sit_dbinfos_train.pkl`
+#   with relative paths like `sit_gt_database/xxx.bin`
+# Therefore:
+#   data_root should be `data_root` (data/sit/training/)
+#   so that: data_root + 'sit_gt_database/xxx.bin' matches the on-disk layout.
 db_sampler = dict(
-    data_root=data_root,
-    info_path=data_root + 'sit_dbinfos_train.pkl',
+    data_root=data_root,  # Database files are stored in data/sit/training/sit_gt_database/
+    info_path=data_root_for_info + 'sit_dbinfos_train.pkl',
     rate=1.0,
     prepare=dict(
         filter_by_difficulty=[-1],
@@ -101,8 +110,8 @@ train_dataloader = dict(
     dataset=dict(
         type=dataset_type,
         data_root=data_root,
-        ann_file='sit_infos_train.pkl',
-        data_prefix=dict(pts='training/velodyne'),
+        ann_file='../sit_infos_train.pkl',  # Relative to data_root (data/sit/training/)
+        data_prefix=dict(pts=''),
         pipeline=train_pipeline,
         modality=input_modality,
         test_mode=False,
@@ -119,8 +128,8 @@ val_dataloader = dict(
     dataset=dict(
         type=dataset_type,
         data_root=data_root,
-        data_prefix=dict(pts='training/velodyne'),
-        ann_file='sit_infos_val.pkl',
+        data_prefix=dict(pts=''),
+        ann_file='../sit_infos_val.pkl',  # Relative to data_root (data/sit/training/)
         pipeline=test_pipeline,
         modality=input_modality,
         test_mode=True,
@@ -137,8 +146,8 @@ test_dataloader = dict(
     dataset=dict(
         type=dataset_type,
         data_root=data_root,
-        data_prefix=dict(pts='training/velodyne'),
-        ann_file='sit_infos_test.pkl',
+        data_prefix=dict(pts=''),
+        ann_file='../sit_infos_test.pkl',  # Relative to data_root (data/sit/training/)
         pipeline=test_pipeline,
         modality=input_modality,
         test_mode=True,
@@ -149,7 +158,7 @@ test_dataloader = dict(
 # Evaluators
 val_evaluator = dict(
     type='KittiMetric',
-    ann_file=data_root + 'sit_infos_val.pkl',
+    ann_file=data_root_for_info + 'sit_infos_val.pkl',
     metric='bbox',
     backend_args=backend_args)
 

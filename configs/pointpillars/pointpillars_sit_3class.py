@@ -6,15 +6,22 @@ _base_ = [
 
 point_cloud_range = [-50, -50, -5, 50, 50, 3]  # SiT point cloud range
 # dataset settings
-data_root = 'data/sit/'
+# Point cloud files are at data/sit/training/training/velodyne/
+data_root = 'data/sit/training/'  # Must match base config for correct point cloud paths
+data_root_for_info = 'data/sit/'  # Info files are at data/sit/
 class_names = ['Pedestrian', 'Car']
 metainfo = dict(classes=class_names)
 backend_args = None
 
 # PointPillars adopted a different sampling strategies among classes
+# For SiT, GT database is created under:
+#   data/sit/training/sit_gt_database/
+# with dbinfo at:
+#   data/sit/sit_dbinfos_train.pkl
+# so data_root must be `data_root` (data/sit/training/).
 db_sampler = dict(
-    data_root=data_root,
-    info_path=data_root + 'sit_dbinfos_train.pkl',
+    data_root=data_root,  # Database files are stored in data/sit/training/sit_gt_database/
+    info_path=data_root_for_info + 'sit_dbinfos_train.pkl',
     rate=1.0,
     prepare=dict(
         filter_by_difficulty=[-1],
@@ -38,7 +45,7 @@ train_pipeline = [
         use_dim=4,
         backend_args=backend_args),
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
-    dict(type='ObjectSample', db_sampler=db_sampler, use_ground_plane=True),
+    dict(type='ObjectSample', db_sampler=db_sampler, use_ground_plane=False),
     dict(type='RandomFlip3D', flip_ratio_bev_horizontal=0.5),
     dict(
         type='GlobalRotScaleTrans',
