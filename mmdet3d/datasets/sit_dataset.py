@@ -1,6 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from typing import Callable, List, Union
 
+import os.path as osp
 import numpy as np
 
 from mmdet3d.registry import DATASETS
