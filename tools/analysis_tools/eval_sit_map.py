@@ -55,25 +55,80 @@ def parse_args() -> argparse.Namespace:
 
 def load_gt_annos(ann_file: str) -> List[Dict]:
     """Load GT annotations from a sit_infos_*.pkl file and convert to KITTI
-    annotation dicts using the same helper as KittiMetric.
+    annotation dicts.
+
+    Supports two formats:
+
+    1) New-style dict with keys:
+       - 'metainfo'
+       - 'data_list'
+       This is the format produced by the current SiT converter /
+       create_data.py integration. In this case we delegate conversion to
+       :meth:`KittiMetric.convert_annos_to_kitti_annos`.
+
+    2) Legacy KITTI-style list[dict] where each element already contains an
+       'annos' field (and often 'image' / 'point_cloud'/ 'lidar_points').
+       In this case we skip KittiMetric and read 'annos' directly.
     """
     pkl_infos = load(ann_file)
 
-    # Minimal KittiMetric instance, only used for its conversion helper.
-    # - metric='bbox' so we only care about 2D KITTI-style evaluation.
-    metric_helper = KittiMetric(
-        ann_file=ann_file,
-        metric='bbox',
-        format_only=False,
-        backend_args=None)
+    # Case 1: new-style dict with metainfo + data_list (preferred path for SiT)
+    if isinstance(pkl_infos, dict):
+        # Minimal KittiMetric instance, only used for its conversion helper.
+        # - metric='bbox' so we only care about 2D KITTI-style evaluation.
+        metric_helper = KittiMetric(
+            ann_file=ann_file,
+            metric='bbox',
+            format_only=False,
+            backend_args=None)
 
-    data_infos = metric_helper.convert_annos_to_kitti_annos(pkl_infos)
-    data_list: Sequence[Dict] = data_infos['data_list']
+        data_infos = metric_helper.convert_annos_to_kitti_annos(pkl_infos)
+        data_list: Sequence[Dict] = data_infos['data_list']
 
-    # Each element in data_list now has a 'kitti_annos' field.
-    gt_annos = [info['kitti_annos'] for info in data_list]
-    sample_ids = [str(info['sample_idx']) for info in data_list]
-    return gt_annos, sample_ids
+        # Each element in data_list now has a 'kitti_annos' field.
+        gt_annos = [info['kitti_annos'] for info in data_list]
+        sample_ids = [str(info['sample_idx']) for info in data_list]
+        return gt_annos, sample_ids
+
+    # Case 2: legacy list-style KITTI infos (e.g. older create_data scripts)
+    if isinstance(pkl_infos, list):
+        if len(pkl_infos) == 0:
+            return [], []
+
+        # Expect classic KITTI keys; we read the pre-computed 'annos' field.
+        if 'annos' not in pkl_infos[0]:
+            raise TypeError(
+                'Expected legacy KITTI infos list with an "annos" field in '
+                'each element, but got keys: '
+                f'{list(pkl_infos[0].keys())}')
+
+        gt_annos: List[Dict] = [info['annos'] for info in pkl_infos]
+
+        sample_ids: List[str] = []
+        for idx, info in enumerate(pkl_infos):
+            sid = None
+            # Try a few common fields in decreasing order of preference.
+            if 'image' in info and 'image_idx' in info['image']:
+                sid = str(info['image']['image_idx'])
+            elif 'point_cloud' in info and 'lidar_idx' in info['point_cloud']:
+                sid = str(info['point_cloud']['lidar_idx'])
+            elif 'lidar_points' in info and 'lidar_path' in info['lidar_points']:
+                # Derive from filename if it looks like KITTI (000123.bin)
+                stem = os.path.splitext(
+                    os.path.basename(info['lidar_points']['lidar_path']))[0]
+                sid = stem
+            elif 'image_idx' in info:
+                sid = str(info['image_idx'])
+            else:
+                # Fallback: use list index as sample id
+                sid = str(idx)
+            sample_ids.append(sid)
+
+        return gt_annos, sample_ids
+
+    raise TypeError(
+        f'Unsupported info format loaded from {ann_file!r}: '
+        f'expected dict or list, got {type(pkl_infos)}')
 
 
 def parse_kitti_txt_file(path: str) -> Dict[str, np.ndarray]:
