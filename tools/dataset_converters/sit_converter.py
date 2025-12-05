@@ -141,8 +141,14 @@ def convert_label_3d_to_kitti(sit_label_path: str, kitti_label_path: str,
                 # Map SiT classes to KITTI classes
                 class_mapping = {
                     'Pedestrian': 'Pedestrian',
-                    'Pedestrain_sitting': 'Pedestrian',  # Map to Pedestrian
-                    'Car': 'Car'
+                    'Pedestrain_sitting': 'Pedestrian',  # Map to Pedestrian (typo in original dataset)
+                    'Car': 'Car',
+                    # Vehicle classes mapped to Car
+                    'Truck': 'Car',
+                    'Bus': 'Car',
+                    # Person-on-vehicle classes mapped to Pedestrian
+                    'Cyclist': 'Pedestrian',
+                    'Motorcyclist': 'Pedestrian',
                 }
 
                 kitti_class = class_mapping.get(label_data['class_name'])
