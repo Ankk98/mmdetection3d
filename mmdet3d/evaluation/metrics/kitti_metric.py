@@ -211,15 +211,9 @@ class KittiMetric(BaseMetric):
         self.classes = self.dataset_meta['classes']
         print(f"DEBUG: Got classes: {self.classes}", flush=True)
 
-        # Check if evaluation should be skipped BEFORE doing any work
-        # This helps avoid segfaults during data loading/processing
-        if self.skip_eval_on_segfault:
-            import os
-            if os.environ.get('MMDET3D_SKIP_KITTI_EVAL', '0') == '1':
-                logger.warning(
-                    'Skipping KITTI evaluation due to MMDET3D_SKIP_KITTI_EVAL=1. '
-                    'Results have been saved to pkl file but metrics will not be computed.')
-                return {}
+        # Note: We don't skip evaluation here even if skip_eval_on_segfault is True.
+        # We'll attempt evaluation and only skip if data validation fails or errors occur.
+        # This allows evaluation to proceed normally when data is valid.
         
         print("DEBUG: Loading annotations...", flush=True)
         # load annotations
@@ -244,14 +238,8 @@ class KittiMetric(BaseMetric):
                 f'results are saved in {osp.dirname(self.submission_prefix)}')
             return metric_dict
         
-        # Check if evaluation should be skipped (e.g., if segfaults are occurring)
-        if self.skip_eval_on_segfault:
-            import os
-            if os.environ.get('MMDET3D_SKIP_KITTI_EVAL', '0') == '1':
-                logger.warning(
-                    'Skipping KITTI evaluation due to skip_eval_on_segfault flag. '
-                    'Results have been saved to pkl file but metrics will not be computed.')
-                return metric_dict
+        # Note: We proceed with evaluation. Data validation and error handling
+        # will skip evaluation only if problems are detected.
         
         # Log that we're starting evaluation
         logger.info('Starting KITTI evaluation to compute mAP metrics...')
