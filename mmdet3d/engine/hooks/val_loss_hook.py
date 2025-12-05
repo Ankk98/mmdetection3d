@@ -5,6 +5,7 @@ from typing import Dict, Sequence
 import torch
 from mmengine.hooks import Hook
 from mmengine.logging import print_log
+from mmengine.model import is_model_wrapper
 from mmengine.runner import Runner
 
 from mmdet3d.registry import HOOKS
@@ -45,8 +46,10 @@ class ValLossHook(Hook):
         if batch_idx % self.interval != 0:
             return
 
-        # Get the model
+        # Get the model and unwrap if it's wrapped (e.g., MMDistributedDataParallel)
         model = runner.model
+        if is_model_wrapper(model):
+            model = model.module
 
         # Check if data_batch has ground truth annotations
         # In MMDetection3D, data_batch typically has 'inputs' and 'data_samples'
