@@ -227,6 +227,9 @@ class KittiMetric(BaseMetric):
                     'Skipping KITTI evaluation due to skip_eval_on_segfault flag. '
                     'Results have been saved to pkl file but metrics will not be computed.')
                 return metric_dict
+        
+        # Log that we're starting evaluation
+        logger.info('Starting KITTI evaluation to compute mAP metrics...')
 
         # Safely build gt_annos with validation
         gt_annos = []
@@ -290,6 +293,7 @@ class KittiMetric(BaseMetric):
 
         for metric in self.metrics:
             try:
+                logger.info(f'Computing {metric} metric...')
                 ap_dict = self.kitti_evaluate(
                     result_dict,
                     gt_annos,
@@ -298,6 +302,7 @@ class KittiMetric(BaseMetric):
                     classes=self.classes)
                 for result in ap_dict:
                     metric_dict[result] = ap_dict[result]
+                logger.info(f'Successfully computed {metric} metric. Results: {list(ap_dict.keys())}')
             except Exception as e:
                 import warnings
                 warnings.warn(
@@ -308,6 +313,12 @@ class KittiMetric(BaseMetric):
 
         if tmp_dir is not None:
             tmp_dir.cleanup()
+        
+        if metric_dict:
+            logger.info(f'Evaluation completed. Computed {len(metric_dict)} metrics: {list(metric_dict.keys())[:5]}...')
+        else:
+            logger.warning('Evaluation completed but no metrics were computed. This may indicate an issue.')
+        
         return metric_dict
 
     def kitti_evaluate(self,
@@ -515,9 +526,16 @@ class KittiMetric(BaseMetric):
                                 f'Skipping evaluation.')
                             continue
                         
+                        # Log before calling kitti_eval to help identify where segfault occurs
+                        logger.info(
+                            f'Calling kitti_eval for {name} with {len(gt_annos)} GT annotations, '
+                            f'{total_gt_boxes} GT boxes, {total_dt_boxes} DT boxes, '
+                            f'eval_types={eval_types}')
+                        
                         try:
                             ap_result_str, ap_dict_ = kitti_eval(
                                 gt_annos, dt_annos, classes, eval_types=eval_types)
+                            logger.info(f'kitti_eval completed successfully for {name}')
                             for ap_type, ap in ap_dict_.items():
                                 ap_dict[f'{name}/{ap_type}'] = float(f'{ap:.4f}')
 
