@@ -186,3 +186,15 @@ train_cfg = dict(by_epoch=True, max_epochs=epoch_num, val_interval=2)
 val_cfg = dict()
 test_cfg = dict()
 
+# Enable checkpoint saving (default_runtime has interval=-1 which disables it)
+# Note: Since format_only=True, we can't save "best" checkpoint (no metrics)
+default_hooks = dict(
+    checkpoint=dict(
+        type='CheckpointHook',
+        interval=5,  # Save checkpoint every 5 epochs
+        max_keep_ckpts=5,  # Keep the latest 5 checkpoints (saves disk space)
+        save_optimizer=True,  # Also save optimizer state for resuming
+        by_epoch=True  # Save by epoch (not iteration)
+    )
+)
+
