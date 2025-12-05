@@ -107,7 +107,13 @@ val_pipeline = [
 train_dataloader = dict(
     dataset=dict(pipeline=train_pipeline, metainfo=metainfo))
 test_dataloader = dict(dataset=dict(pipeline=test_pipeline, metainfo=metainfo))
-val_dataloader = dict(dataset=dict(pipeline=val_pipeline, metainfo=metainfo))
+# Set test_mode=False for validation to enable annotation loading for loss computation
+# Evaluation will still work correctly as the evaluator uses the annotation file directly
+val_dataloader = dict(
+    dataset=dict(
+        pipeline=val_pipeline,
+        metainfo=metainfo,
+        test_mode=False))  # Set to False to load ann_info for loss computation
 
 # Model settings for SiT dataset
 # Calculate output shape based on point cloud range and voxel size
@@ -241,4 +247,15 @@ default_hooks = dict(
         interval=1  # Compute loss for every validation batch
     )
 )
+
+# Enable TensorBoard visualization backend for real-time monitoring
+# This allows viewing training metrics, loss curves, and mAP in TensorBoard
+vis_backends = [
+    dict(type='LocalVisBackend'),  # Keep local logging
+    dict(type='TensorboardVisBackend')  # Add TensorBoard logging
+]
+visualizer = dict(
+    type='Det3DLocalVisualizer',
+    vis_backends=vis_backends,
+    name='visualizer')
 
