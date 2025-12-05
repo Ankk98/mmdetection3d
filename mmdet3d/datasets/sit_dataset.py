@@ -172,50 +172,46 @@ class SiTDataset(KittiDataset):
             # base `_remove_dontcare` implementation only applies the mask to
             # ndarray fields and leaves the `instances` list untouched, which
             # would desynchronize it from `gt_bboxes_3d` / `gt_labels_3d`.
-            # We therefore compute the mask up-front and manually filter
-            # `instances` afterwards.
+            # We therefore compute the mask up-front and filter `instances`
+            # BEFORE calling `_remove_dontcare`, so that both are filtered
+            # consistently.
             instances = ann_info.get('instances', None)
             labels = ann_info.get('gt_labels_3d', None)
-            filter_mask = None
+            
+            # Compute filter mask from original unfiltered labels
             if instances is not None and labels is not None:
                 filter_mask = labels > -1
-
-            ann_info = self._remove_dontcare(ann_info)
-
-            if filter_mask is not None and instances is not None:
-                # After _remove_dontcare, gt_labels_3d and gt_bboxes_3d have been filtered.
-                # We must ensure instances list matches the filtered arrays' length to
-                # maintain consistency. The filtered array length is the ground truth.
-                filtered_array_len = len(ann_info['gt_labels_3d'])
-                
-                # Filter instances using the mask, but only consider as many instances
-                # as we have in the filter_mask to avoid index errors
-                num_to_check = min(len(instances), len(filter_mask))
+                # Filter instances list BEFORE calling _remove_dontcare
+                # This ensures instances and arrays stay in sync
                 filtered_instances = [
-                    inst for inst, keep in zip(instances[:num_to_check], filter_mask[:num_to_check])
-                    if keep
+                    inst for inst, keep in zip(instances, filter_mask) if keep
                 ]
+                ann_info['instances'] = filtered_instances
+            
+            # Now call _remove_dontcare, which will filter the arrays.
+            # Since we've already filtered instances above, they should match.
+            ann_info = self._remove_dontcare(ann_info)
+            
+            # Verify consistency: filtered arrays and instances should have same length
+            if instances is not None and labels is not None:
+                filtered_array_len = len(ann_info['gt_labels_3d'])
+                filtered_instances_len = len(ann_info.get('instances', []))
                 
-                # Ensure the filtered instances list matches the filtered array length.
-                # If there's still a mismatch, truncate or pad to match (the arrays are the source of truth).
-                if len(filtered_instances) == filtered_array_len:
-                    ann_info['instances'] = filtered_instances
-                elif len(filtered_instances) > filtered_array_len:
-                    # More instances than arrays: truncate instances to match array length
-                    ann_info['instances'] = filtered_instances[:filtered_array_len]
-                else:
-                    # Fewer instances than arrays: this indicates a data inconsistency.
-                    # Since arrays are the source of truth, pad instances with empty dicts.
+                if filtered_instances_len != filtered_array_len:
+                    # This should not happen if the logic is correct, but log a warning
                     from mmengine.logging import print_log
                     print_log(
-                        f'Warning: filtered_instances ({len(filtered_instances)}) has fewer '
-                        f'elements than filtered arrays ({filtered_array_len}). '
-                        f'Padding instances with empty dicts to maintain consistency.',
+                        f'Warning: instances list ({filtered_instances_len}) and '
+                        f'filtered arrays ({filtered_array_len}) have mismatched lengths. '
+                        f'This indicates a data inconsistency.',
                         logger='current',
                         level=30)  # WARNING level
-                    # Pad with empty dicts to match array length
-                    ann_info['instances'] = filtered_instances + [{}] * (
-                        filtered_array_len - len(filtered_instances))
+                    # Truncate or pad instances to match array length (arrays are source of truth)
+                    if filtered_instances_len > filtered_array_len:
+                        ann_info['instances'] = ann_info['instances'][:filtered_array_len]
+                    else:
+                        ann_info['instances'] = ann_info['instances'] + [{}] * (
+                            filtered_array_len - filtered_instances_len)
 
         # Convert numpy array to LiDARInstance3DBoxes for LiDAR-only dataset.
         # SiT uses LiDAR coordinates directly, so no camera-to-lidar transform
