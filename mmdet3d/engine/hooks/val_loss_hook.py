@@ -75,6 +75,17 @@ class ValLossHook(Hook):
             # No ground truth available, skip loss computation
             return
 
+        # Check if required input keys are present (e.g., 'voxels' for VoxelNet/PointPillars)
+        # Some models require 'voxels' key which may be missing for empty point clouds
+        # or failed voxelization. Skip loss computation if required keys are missing.
+        # VoxelNet-based models (like PointPillars) require 'voxels' in inputs
+        if hasattr(model, 'voxel_encoder'):
+            # This is a VoxelNet model that requires voxels
+            if 'voxels' not in inputs:
+                # Voxels are missing - this can happen for empty point clouds or
+                # voxelization failures. Skip this batch to avoid KeyError.
+                return
+
         # Compute loss
         try:
             # Keep model in eval mode for validation
