@@ -1,4 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+import logging
 from typing import Dict, Sequence
 
 import torch
@@ -103,7 +104,7 @@ class ValLossHook(Hook):
             print_log(
                 f'Warning: Failed to compute validation loss at batch {batch_idx}: {e}',
                 logger='current',
-                level='WARNING')
+                level=logging.WARNING)
             return
 
     def after_val_epoch(self, runner: Runner, metrics: Dict = None) -> None:
