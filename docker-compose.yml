@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  mmdet3d-training:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: mmdet3d-training:latest
+    container_name: mmdet3d-training
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Explicitly unset CUDA_VISIBLE_DEVICES to ensure PyTorch sees all GPUs
+      # The distributed launcher will handle GPU assignment via LOCAL_RANK
+      # If you need to limit GPUs, uncomment and set (e.g., CUDA_VISIBLE_DEVICES=0,1)
+      # - CUDA_VISIBLE_DEVICES=0,1
+      - PYTHONUNBUFFERED=1
+      - FORCE_CUDA=1
+      # Optional: Set custom shared memory directory if needed
+      # - TORCH_SHARED_MEMORY_DIR=/tmp/pytorch_shm
+    volumes:
+      # Mount the entire project directory
+      - .:/workspace/mmdetection3d:rw
+      # Mount data directory (adjust path if data is stored elsewhere)
+      - ./data:/workspace/mmdetection3d/data:rw
+      # Mount checkpoints directory
+      - ./checkpoints:/workspace/mmdetection3d/checkpoints:rw
+      # Mount work_dirs for training outputs
+      - ./work_dirs:/workspace/mmdetection3d/work_dirs:rw
+      # Optional: Mount finetuning_results if you want to preserve them
+      - ./finetuning_results:/workspace/mmdetection3d/finetuning_results:rw
+    working_dir: /workspace/mmdetection3d
+    # Critical: Increase shared memory size for DataLoader workers
+    # With 400GB RAM, 16g-32g is safe. Adjust based on your needs.
+    shm_size: 16g
+    # Keep container running for interactive use
+    stdin_open: true
+    tty: true
+    # Restart policy (optional)
+    restart: unless-stopped
+    # Resource limits (optional, adjust based on your system)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # Default command (can be overridden)
+    command: /bin/bash
+
+  # Alternative service for single-GPU training
+  mmdet3d-training-single:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: mmdet3d-training:latest
+    container_name: mmdet3d-training-single
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTHONUNBUFFERED=1
+      - FORCE_CUDA=1
+    volumes:
+      - .:/workspace/mmdetection3d:rw
+      - ./data:/workspace/mmdetection3d/data:rw
+      - ./checkpoints:/workspace/mmdetection3d/checkpoints:rw
+      - ./work_dirs:/workspace/mmdetection3d/work_dirs:rw
+      - ./finetuning_results:/workspace/mmdetection3d/finetuning_results:rw
+    working_dir: /workspace/mmdetection3d
+    shm_size: 8g  # Smaller for single GPU
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: /bin/bash
+
