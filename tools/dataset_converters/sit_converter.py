@@ -871,6 +871,8 @@ def main():
                        help='Create info files after conversion')
     parser.add_argument('--create-db', action='store_true',
                        help='Create database files after conversion')
+    parser.add_argument('--start-frame-idx', type=int, default=0,
+                       help='Starting frame index for this conversion run (to continue from previous conversion)')
 
     args = parser.parse_args()
 
@@ -896,7 +898,7 @@ def main():
 
     # Convert sequences with global frame counter to avoid ID conflicts
     converted_sequences = []
-    global_frame_counter = 0
+    global_frame_counter = args.start_frame_idx
     
     for seq in sequences:
         success, next_frame_idx = convert_sequence(args.sit_root, args.output_root, seq, global_frame_counter)
