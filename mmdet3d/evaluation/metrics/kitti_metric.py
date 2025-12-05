@@ -200,17 +200,42 @@ class KittiMetric(BaseMetric):
             Dict[str, float]: The computed metrics. The keys are the names of
             the metrics, and the values are corresponding results.
         """
+        # Log immediately to help identify if segfault happens here
+        import sys
+        sys.stdout.flush()
+        print("DEBUG: compute_metrics called", flush=True)
+        
         logger: MMLogger = MMLogger.get_current_instance()
+        print("DEBUG: Got logger", flush=True)
+        
         self.classes = self.dataset_meta['classes']
+        print(f"DEBUG: Got classes: {self.classes}", flush=True)
 
+        # Check if evaluation should be skipped BEFORE doing any work
+        # This helps avoid segfaults during data loading/processing
+        if self.skip_eval_on_segfault:
+            import os
+            if os.environ.get('MMDET3D_SKIP_KITTI_EVAL', '0') == '1':
+                logger.warning(
+                    'Skipping KITTI evaluation due to MMDET3D_SKIP_KITTI_EVAL=1. '
+                    'Results have been saved to pkl file but metrics will not be computed.')
+                return {}
+        
+        print("DEBUG: Loading annotations...", flush=True)
         # load annotations
         pkl_infos = load(self.ann_file, backend_args=self.backend_args)
+        print("DEBUG: Annotations loaded", flush=True)
+        
         self.data_infos = self.convert_annos_to_kitti_annos(pkl_infos)
+        print("DEBUG: Annotations converted", flush=True)
+        
+        print("DEBUG: Formatting results...", flush=True)
         result_dict, tmp_dir = self.format_results(
             results,
             pklfile_prefix=self.pklfile_prefix,
             submission_prefix=self.submission_prefix,
             classes=self.classes)
+        print("DEBUG: Results formatted", flush=True)
 
         metric_dict = {}
 

@@ -227,6 +227,11 @@ val_evaluator = dict(
     ann_file=data_root + 'sit_infos_val.pkl',
     metric='bbox',
     format_only=False,  # Enable mAP computation
+    skip_eval_on_segfault=True,  # Skip evaluation if segfaults occur (set MMDET3D_SKIP_KITTI_EVAL=1 to enable)
+    # Save predictions to permanent location in work_dirs
+    # This ensures predictions are preserved even if evaluation segfaults
+    # File will be saved as: work_dirs/predictions/val_results/pred_instances_3d.pkl
+    pklfile_prefix='work_dirs/predictions/val_results',
     backend_args=backend_args)
 
 # Enable checkpoint saving (default_runtime has interval=-1 which disables it)
