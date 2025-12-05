@@ -197,13 +197,25 @@ class SiTDataset(KittiDataset):
                 ]
                 
                 # Ensure the filtered instances list matches the filtered array length.
-                # If there's still a mismatch, truncate to match (the arrays are the source of truth).
+                # If there's still a mismatch, truncate or pad to match (the arrays are the source of truth).
                 if len(filtered_instances) == filtered_array_len:
                     ann_info['instances'] = filtered_instances
-                else:
-                    # Length mismatch: use filtered array length as ground truth and truncate
-                    # instances to match. This ensures consistency even if there's a deeper issue.
+                elif len(filtered_instances) > filtered_array_len:
+                    # More instances than arrays: truncate instances to match array length
                     ann_info['instances'] = filtered_instances[:filtered_array_len]
+                else:
+                    # Fewer instances than arrays: this indicates a data inconsistency.
+                    # Since arrays are the source of truth, pad instances with empty dicts.
+                    from mmengine.logging import print_log
+                    print_log(
+                        f'Warning: filtered_instances ({len(filtered_instances)}) has fewer '
+                        f'elements than filtered arrays ({filtered_array_len}). '
+                        f'Padding instances with empty dicts to maintain consistency.',
+                        logger='current',
+                        level=30)  # WARNING level
+                    # Pad with empty dicts to match array length
+                    ann_info['instances'] = filtered_instances + [{}] * (
+                        filtered_array_len - len(filtered_instances))
 
         # Convert numpy array to LiDARInstance3DBoxes for LiDAR-only dataset.
         # SiT uses LiDAR coordinates directly, so no camera-to-lidar transform

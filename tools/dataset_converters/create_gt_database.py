@@ -15,6 +15,9 @@ from pycocotools.coco import COCO
 from mmdet3d.registry import DATASETS
 from mmdet3d.structures.ops import box_np_ops as box_np_ops
 
+# Import transforms module to register all transforms (required for dataset building)
+import mmdet3d.datasets.transforms  # noqa: F401
+
 
 def _to_numpy(array_like):
     """Convert various point/box containers to a NumPy array.
