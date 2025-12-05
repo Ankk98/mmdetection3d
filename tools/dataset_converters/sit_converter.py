@@ -759,16 +759,17 @@ def create_sit_database(data_path: str,
         relative_path=relative_path)
 
 
-def convert_sequence(sit_root: str, output_root: str, sequence: str) -> bool:
+def convert_sequence(sit_root: str, output_root: str, sequence: str, start_frame_idx: int = 0) -> Tuple[bool, int]:
     """Convert a single SiT sequence to KITTI format.
 
     Args:
         sit_root (str): Root directory of SiT dataset.
         output_root (str): Root directory for converted output.
         sequence (str): Sequence name to convert.
+        start_frame_idx (int): Starting frame index for this sequence (to avoid conflicts).
 
     Returns:
-        bool: True if conversion successful.
+        Tuple[bool, int]: (True if conversion successful, next_frame_idx for next sequence).
     """
     sit_seq_dir = osp.join(sit_root, sequence)
     output_training_dir = osp.join(output_root, 'training')
@@ -779,71 +780,76 @@ def convert_sequence(sit_root: str, output_root: str, sequence: str) -> bool:
     os.makedirs(osp.join(output_training_dir, 'calib'), exist_ok=True)
     os.makedirs(osp.join(output_training_dir, 'image_2'), exist_ok=True)
 
-    print(f"Converting sequence: {sequence}")
+    print(f"Converting sequence: {sequence} (starting at frame {start_frame_idx})")
 
     # Get all frame indices from PCD files
     velo_dir = osp.join(sit_seq_dir, 'velo', 'concat', 'data')
     if not osp.exists(velo_dir):
         print(f"Warning: Velocity directory not found: {velo_dir}")
-        return False
+        return False, start_frame_idx
 
     pcd_files = sorted([f for f in os.listdir(velo_dir) if f.endswith('.pcd')])
     if not pcd_files:
         print(f"Warning: No PCD files found in {velo_dir}")
-        return False
+        return False, start_frame_idx
 
     success_count = 0
     total_count = len(pcd_files)
+    current_frame_idx = start_frame_idx
 
     for pcd_file in pcd_files:
-        frame_idx = pcd_file.split('.')[0]
+        # Use global frame counter to avoid conflicts between sequences
+        global_frame_idx = current_frame_idx
+        frame_idx_str = f'{global_frame_idx:06d}'  # Zero-padded to 6 digits (KITTI format)
+        current_frame_idx += 1
 
         # Convert PCD to .bin
         pcd_path = osp.join(velo_dir, pcd_file)
-        bin_path = osp.join(output_training_dir, 'velodyne', f'{frame_idx}.bin')
+        bin_path = osp.join(output_training_dir, 'velodyne', f'{frame_idx_str}.bin')
 
         if convert_pcd_to_bin(pcd_path, bin_path):
-            print(f"  Converted PCD: {pcd_file} -> {frame_idx}.bin")
+            print(f"  Converted PCD: {pcd_file} -> {frame_idx_str}.bin")
         else:
             print(f"  Failed to convert PCD: {pcd_file}")
             continue
 
         # Convert labels
-        label_path = osp.join(sit_seq_dir, 'label_3d', f'{frame_idx}.txt')
-        kitti_label_path = osp.join(output_training_dir, 'label_2', f'{frame_idx}.txt')
+        original_frame_idx = pcd_file.split('.')[0]  # Original frame ID from sequence
+        label_path = osp.join(sit_seq_dir, 'label_3d', f'{original_frame_idx}.txt')
+        kitti_label_path = osp.join(output_training_dir, 'label_2', f'{frame_idx_str}.txt')
 
         if osp.exists(label_path):
             if convert_label_3d_to_kitti(label_path, kitti_label_path):
-                print(f"  Converted labels: {frame_idx}.txt")
+                print(f"  Converted labels: {original_frame_idx}.txt -> {frame_idx_str}.txt")
             else:
-                print(f"  Failed to convert labels: {frame_idx}.txt")
+                print(f"  Failed to convert labels: {original_frame_idx}.txt")
         else:
             # Create empty label file
             with open(kitti_label_path, 'w') as f:
                 pass
-            print(f"  No labels found for frame {frame_idx}, created empty file")
+            print(f"  No labels found for frame {original_frame_idx}, created empty file {frame_idx_str}.txt")
 
         # Convert calibration
-        calib_path = osp.join(sit_seq_dir, 'calib', f'{frame_idx}.txt')
-        kitti_calib_path = osp.join(output_training_dir, 'calib', f'{frame_idx}.txt')
+        calib_path = osp.join(sit_seq_dir, 'calib', f'{original_frame_idx}.txt')
+        kitti_calib_path = osp.join(output_training_dir, 'calib', f'{frame_idx_str}.txt')
 
         if osp.exists(calib_path):
             if convert_calib_to_kitti(calib_path, kitti_calib_path):
-                print(f"  Converted calibration: {frame_idx}.txt")
+                print(f"  Converted calibration: {original_frame_idx}.txt -> {frame_idx_str}.txt")
             else:
-                print(f"  Failed to convert calibration: {frame_idx}.txt")
+                print(f"  Failed to convert calibration: {original_frame_idx}.txt")
         else:
-            print(f"  No calibration found for frame {frame_idx}")
+            print(f"  No calibration found for frame {original_frame_idx}")
 
         # Create placeholder image file (SiT may not have images)
-        image_path = osp.join(output_training_dir, 'image_2', f'{frame_idx}.png')
+        image_path = osp.join(output_training_dir, 'image_2', f'{frame_idx_str}.png')
         # For now, just touch the file (would need actual image conversion)
         Path(image_path).touch()
 
         success_count += 1
 
-    print(f"Converted {success_count}/{total_count} frames for sequence {sequence}")
-    return success_count > 0
+    print(f"Converted {success_count}/{total_count} frames for sequence {sequence} (frames {start_frame_idx} to {current_frame_idx - 1})")
+    return success_count > 0, current_frame_idx
 
 
 def main():
@@ -882,11 +888,15 @@ def main():
 
     print(f"Found sequences: {sequences}")
 
-    # Convert sequences
+    # Convert sequences with global frame counter to avoid ID conflicts
     converted_sequences = []
+    global_frame_counter = 0
+    
     for seq in sequences:
-        if convert_sequence(args.sit_root, args.output_root, seq):
+        success, next_frame_idx = convert_sequence(args.sit_root, args.output_root, seq, global_frame_counter)
+        if success:
             converted_sequences.append(seq)
+            global_frame_counter = next_frame_idx
         else:
             print(f"Failed to convert sequence: {seq}")
 
