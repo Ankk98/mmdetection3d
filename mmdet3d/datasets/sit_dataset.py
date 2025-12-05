@@ -92,39 +92,37 @@ class SiTDataset(KittiDataset):
         """Process the raw data info.
 
         For SiT we follow the standard Det3DDataset path handling
-        (data_root + data_prefix + paths stored in the info file),
-        but early iterations of the converter stored a full
-        ``'training/velodyne/xxx.bin'`` path inside the info file while
-        the dataset's ``data_prefix['pts']`` was also set to
-        ``'training/velodyne'``.  When combined in
-        :meth:`Det3DDataset.parse_data_info`, this produced duplicated
-        segments such as:
+        (data_root + data_prefix + paths stored in the info file).
+        The converter stores only filenames in info files, and data_prefix
+        provides the directory path.
 
-            ``data/sit/training/velodyne/training/velodyne/000001.bin``
-
-        which in turn caused ``FileNotFoundError`` during GT database
-        creation and training.
-
-        To keep the info format backwards-compatible while avoiding I/O
-        errors, we detect and collapse this specific duplication pattern
-        after the base implementation has done its work.
+        For backwards compatibility with old info files that contained full
+        paths, we detect and fix path duplication if present.
         """
         info = super().parse_data_info(info)
 
-        # Normalize any duplicated "training/velodyne" segments that may
-        # arise when both the info dict and `data_prefix['pts']` already
-        # contain this sub-path (e.g.
-        # "data/sit/training/velodyne/training/velodyne/000001.bin").
+        # Backwards compatibility: Fix old info files that had full paths
+        # This can be removed in a future version once all info files are
+        # regenerated with the updated converter
         if self.modality.get('use_lidar', False) and 'lidar_points' in info:
             lidar_path = info['lidar_points'].get('lidar_path', '')
+            # Check if path contains duplication pattern from old converter
             dup_segment = osp.join('training', 'velodyne', 'training',
                                    'velodyne')
             if dup_segment in lidar_path:
+                # Old format detected - fix it
                 normalized = lidar_path.replace(
                     dup_segment, osp.join('training', 'velodyne'))
                 info['lidar_points']['lidar_path'] = normalized
-                # Keep the convenience mirror field in sync as well.
                 info['lidar_path'] = normalized
+                # Log warning to encourage migration
+                from mmengine.logging import print_log
+                print_log(
+                    'Detected old SiT info file format with full paths. '
+                    'Please regenerate info files using updated converter '
+                    'to avoid this warning.',
+                    logger='current',
+                    level=30)  # WARNING level
 
         return info
 
@@ -167,51 +165,10 @@ class SiTDataset(KittiDataset):
             # `Det3DDataset.parse_ann_info`, where no valid instances remain.
             ann_info['instances'] = []
         else:
-            # Filter out "dontcare"/unknown categories where labels are -1,
-            # matching the behavior in `KittiDataset.parse_ann_info`.  The
-            # base `_remove_dontcare` implementation only applies the mask to
-            # ndarray fields and leaves the `instances` list untouched, which
-            # would desynchronize it from `gt_bboxes_3d` / `gt_labels_3d`.
-            # We therefore compute the mask up-front and filter `instances`
-            # BEFORE calling `_remove_dontcare`, so that both are filtered
-            # consistently.
-            instances = ann_info.get('instances', None)
-            labels = ann_info.get('gt_labels_3d', None)
-            
-            # Compute filter mask from original unfiltered labels
-            if instances is not None and labels is not None:
-                filter_mask = labels > -1
-                # Filter instances list BEFORE calling _remove_dontcare
-                # This ensures instances and arrays stay in sync
-                filtered_instances = [
-                    inst for inst, keep in zip(instances, filter_mask) if keep
-                ]
-                ann_info['instances'] = filtered_instances
-            
-            # Now call _remove_dontcare, which will filter the arrays.
-            # Since we've already filtered instances above, they should match.
+            # Filter out "dontcare"/unknown categories where labels are -1.
+            # The base _remove_dontcare() now handles both arrays and instances list
+            # consistently, so no special handling is needed.
             ann_info = self._remove_dontcare(ann_info)
-            
-            # Verify consistency: filtered arrays and instances should have same length
-            if instances is not None and labels is not None:
-                filtered_array_len = len(ann_info['gt_labels_3d'])
-                filtered_instances_len = len(ann_info.get('instances', []))
-                
-                if filtered_instances_len != filtered_array_len:
-                    # This should not happen if the logic is correct, but log a warning
-                    from mmengine.logging import print_log
-                    print_log(
-                        f'Warning: instances list ({filtered_instances_len}) and '
-                        f'filtered arrays ({filtered_array_len}) have mismatched lengths. '
-                        f'This indicates a data inconsistency.',
-                        logger='current',
-                        level=30)  # WARNING level
-                    # Truncate or pad instances to match array length (arrays are source of truth)
-                    if filtered_instances_len > filtered_array_len:
-                        ann_info['instances'] = ann_info['instances'][:filtered_array_len]
-                    else:
-                        ann_info['instances'] = ann_info['instances'] + [{}] * (
-                            filtered_array_len - filtered_instances_len)
 
         # Convert numpy array to LiDARInstance3DBoxes for LiDAR-only dataset.
         # SiT uses LiDAR coordinates directly, so no camera-to-lidar transform

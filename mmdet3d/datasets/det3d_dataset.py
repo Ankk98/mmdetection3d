@@ -165,15 +165,27 @@ class Det3DDataset(BaseDataset):
                 instance with label `-1` will be removed.
 
         Returns:
-            dict: Annotations after filtering.
+            dict: Annotations after filtering. Both arrays and
+                instances list are filtered consistently.
         """
         img_filtered_annotations = {}
         filter_mask = ann_info['gt_labels_3d'] > -1
+        
         for key in ann_info.keys():
-            if key != 'instances':
-                img_filtered_annotations[key] = (ann_info[key][filter_mask])
+            if key == 'instances':
+                # Filter instances list to match arrays
+                # This ensures consistency between arrays and list
+                img_filtered_annotations[key] = [
+                    inst for inst, keep in zip(ann_info[key], filter_mask) if keep
+                ]
+            elif isinstance(ann_info[key], np.ndarray):
+                # Filter numpy arrays using mask
+                img_filtered_annotations[key] = ann_info[key][filter_mask]
             else:
+                # For other types (dicts, lists that aren't instances), copy as-is
+                # This handles edge cases like nested structures
                 img_filtered_annotations[key] = ann_info[key]
+        
         return img_filtered_annotations
 
     def get_ann_info(self, index: int) -> dict:

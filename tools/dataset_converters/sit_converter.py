@@ -408,10 +408,10 @@ def get_sit_image_info(data_path: str,
         # Point cloud info
         if velodyne:
             pc_info = {'num_pts_feats': 4}
-            if training:
-                pc_info['lidar_path'] = f'training/velodyne/{frame_id_str}.bin'
-            else:
-                pc_info['lidar_path'] = f'testing/velodyne/{frame_id_str}.bin'
+            # Store only filename - data_prefix will provide the directory path
+            # This matches the pattern used by Waymo and updated KITTI converters
+            # and prevents path duplication when combined with data_prefix
+            pc_info['lidar_path'] = f'{frame_id_str}.bin'
             info['lidar_points'] = pc_info
 
         # Image info (placeholder)
