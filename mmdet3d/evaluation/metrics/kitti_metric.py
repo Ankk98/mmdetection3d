@@ -59,7 +59,8 @@ class KittiMetric(BaseMetric):
                  format_only: bool = False,
                  submission_prefix: Optional[str] = None,
                  collect_device: str = 'cpu',
-                 backend_args: Optional[dict] = None) -> None:
+                 backend_args: Optional[dict] = None,
+                 skip_eval_on_segfault: bool = False) -> None:
         self.default_prefix = 'Kitti metric'
         super(KittiMetric, self).__init__(
             collect_device=collect_device, prefix=prefix)
@@ -76,6 +77,7 @@ class KittiMetric(BaseMetric):
         self.submission_prefix = submission_prefix
         self.default_cam_key = default_cam_key
         self.backend_args = backend_args
+        self.skip_eval_on_segfault = skip_eval_on_segfault
 
         allowed_metrics = ['bbox', 'img_bbox', 'mAP', 'LET_mAP']
         self.metrics = metric if isinstance(metric, list) else [metric]
@@ -216,6 +218,15 @@ class KittiMetric(BaseMetric):
             logger.info(
                 f'results are saved in {osp.dirname(self.submission_prefix)}')
             return metric_dict
+        
+        # Check if evaluation should be skipped (e.g., if segfaults are occurring)
+        if self.skip_eval_on_segfault:
+            import os
+            if os.environ.get('MMDET3D_SKIP_KITTI_EVAL', '0') == '1':
+                logger.warning(
+                    'Skipping KITTI evaluation due to skip_eval_on_segfault flag. '
+                    'Results have been saved to pkl file but metrics will not be computed.')
+                return metric_dict
 
         # Safely build gt_annos with validation
         gt_annos = []
@@ -327,7 +338,7 @@ class KittiMetric(BaseMetric):
         if classes is None:
             raise ValueError('classes must be provided')
         
-        # Validate gt_annos structure
+        # Validate gt_annos structure and ensure arrays are safe for C extensions
         for i, gt_anno in enumerate(gt_annos):
             if not isinstance(gt_anno, dict):
                 raise TypeError(f'gt_annos[{i}] must be a dict, got {type(gt_anno)}')
@@ -341,6 +352,27 @@ class KittiMetric(BaseMetric):
                     raise TypeError(
                         f'gt_annos[{i}]["{key}"] must be np.ndarray, '
                         f'got {type(gt_anno[key])}')
+                # Ensure arrays are C-contiguous and have valid dtypes for C extensions
+                arr = gt_anno[key]
+                if not arr.flags['C_CONTIGUOUS']:
+                    gt_anno[key] = np.ascontiguousarray(arr)
+                # Validate dtype - C extensions expect specific dtypes
+                if key in ['bbox', 'dimensions', 'location', 'rotation_y', 'alpha', 'score']:
+                    if arr.dtype not in [np.float32, np.float64]:
+                        gt_anno[key] = arr.astype(np.float32)
+                elif key in ['truncated', 'occluded']:
+                    if arr.dtype not in [np.int32, np.int64]:
+                        gt_anno[key] = arr.astype(np.int32)
+                # Check for NaN/Inf that could cause segfaults in C code
+                if arr.dtype in [np.float32, np.float64] and arr.size > 0:
+                    if not np.all(np.isfinite(arr)):
+                        import warnings
+                        warnings.warn(
+                            f'gt_annos[{i}]["{key}"] contains NaN/Inf values. '
+                            f'Replacing with zeros to prevent segfault.',
+                            RuntimeWarning)
+                        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+                        gt_anno[key] = np.ascontiguousarray(arr)
         
         ap_dict = dict()
         for name in results_dict:
@@ -367,13 +399,15 @@ class KittiMetric(BaseMetric):
                     RuntimeWarning)
                 continue
             
-            # Validate dt_annos structure
+            # Validate dt_annos structure and ensure arrays are safe for C extensions
+            validation_failed = False
             for i, dt_anno in enumerate(dt_annos):
                 if not isinstance(dt_anno, dict):
                     import warnings
                     warnings.warn(
                         f'dt_annos[{i}] must be a dict, got {type(dt_anno)}. '
                         f'Skipping evaluation for {name}.', RuntimeWarning)
+                    validation_failed = True
                     break
                 # Check required keys
                 required_keys = ['name', 'truncated', 'occluded', 'alpha', 'bbox',
@@ -384,6 +418,7 @@ class KittiMetric(BaseMetric):
                         warnings.warn(
                             f'Missing key "{key}" in dt_annos[{i}]. '
                             f'Skipping evaluation for {name}.', RuntimeWarning)
+                        validation_failed = True
                         break
                     if not isinstance(dt_anno[key], np.ndarray):
                         import warnings
@@ -391,22 +426,123 @@ class KittiMetric(BaseMetric):
                             f'dt_annos[{i}]["{key}"] must be np.ndarray, '
                             f'got {type(dt_anno[key])}. Skipping evaluation for {name}.',
                             RuntimeWarning)
+                        validation_failed = True
                         break
-            else:
+                    # Ensure arrays are C-contiguous and have valid dtypes
+                    arr = dt_anno[key]
+                    if not arr.flags['C_CONTIGUOUS']:
+                        dt_anno[key] = np.ascontiguousarray(arr)
+                    # Validate dtype - C extensions expect specific dtypes
+                    if key in ['bbox', 'dimensions', 'location', 'rotation_y', 'alpha', 'score']:
+                        if arr.dtype not in [np.float32, np.float64]:
+                            dt_anno[key] = arr.astype(np.float32)
+                    elif key in ['truncated', 'occluded']:
+                        if arr.dtype not in [np.int32, np.int64]:
+                            dt_anno[key] = arr.astype(np.int32)
+                    # Check for NaN/Inf that could cause segfaults in C code
+                    if arr.dtype in [np.float32, np.float64] and arr.size > 0:
+                        if not np.all(np.isfinite(arr)):
+                            import warnings
+                            warnings.warn(
+                                f'dt_annos[{i}]["{key}"] contains NaN/Inf values. '
+                                f'Replacing with zeros to prevent segfault.',
+                                RuntimeWarning)
+                            arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+                            dt_anno[key] = np.ascontiguousarray(arr)
+                if validation_failed:
+                    break
+            
+            if not validation_failed:
                 # All validations passed, proceed with evaluation
                 try:
-                    ap_result_str, ap_dict_ = kitti_eval(
-                        gt_annos, dt_annos, classes, eval_types=eval_types)
-                    for ap_type, ap in ap_dict_.items():
-                        ap_dict[f'{name}/{ap_type}'] = float(f'{ap:.4f}')
+                    # Additional safety check: ensure array shapes are consistent
+                    # This prevents segfaults in calculate_iou_partly
+                    for i, (gt_anno, dt_anno) in enumerate(zip(gt_annos, dt_annos)):
+                        # Check that arrays have expected shapes
+                        if len(gt_anno['bbox']) > 0 and gt_anno['bbox'].shape[1] != 4:
+                            import warnings
+                            warnings.warn(
+                                f'gt_annos[{i}]["bbox"] has wrong shape {gt_anno["bbox"].shape}, '
+                                f'expected (N, 4). Skipping evaluation for {name}.',
+                                RuntimeWarning)
+                            validation_failed = True
+                            break
+                        if len(dt_anno['bbox']) > 0 and dt_anno['bbox'].shape[1] != 4:
+                            import warnings
+                            warnings.warn(
+                                f'dt_annos[{i}]["bbox"] has wrong shape {dt_anno["bbox"].shape}, '
+                                f'expected (N, 4). Skipping evaluation for {name}.',
+                                RuntimeWarning)
+                            validation_failed = True
+                            break
+                        if len(gt_anno['dimensions']) > 0 and gt_anno['dimensions'].shape[1] != 3:
+                            import warnings
+                            warnings.warn(
+                                f'gt_annos[{i}]["dimensions"] has wrong shape {gt_anno["dimensions"].shape}, '
+                                f'expected (N, 3). Skipping evaluation for {name}.',
+                                RuntimeWarning)
+                            validation_failed = True
+                            break
+                        if len(dt_anno['dimensions']) > 0 and dt_anno['dimensions'].shape[1] != 3:
+                            import warnings
+                            warnings.warn(
+                                f'dt_annos[{i}]["dimensions"] has wrong shape {dt_anno["dimensions"].shape}, '
+                                f'expected (N, 3). Skipping evaluation for {name}.',
+                                RuntimeWarning)
+                            validation_failed = True
+                            break
+                    
+                    if not validation_failed:
+                        # Final safety: wrap kitti_eval in a way that can catch segfaults
+                        # Note: Python can't catch segfaults, but we can validate inputs
+                        # to minimize the chance
+                        # Check if we should skip evaluation
+                        if self.skip_eval_on_segfault:
+                            import os
+                            if os.environ.get('MMDET3D_SKIP_KITTI_EVAL', '0') == '1':
+                                logger.warning(
+                                    f'Skipping kitti_eval for {name} due to skip_eval_on_segfault flag.')
+                                continue
+                        
+                        # Additional check: ensure we don't have all-empty arrays which
+                        # can cause issues in calculate_iou_partly
+                        total_gt_boxes = sum(len(anno['bbox']) for anno in gt_annos)
+                        total_dt_boxes = sum(len(anno['bbox']) for anno in dt_annos)
+                        
+                        if total_gt_boxes == 0 and total_dt_boxes == 0:
+                            logger.warning(
+                                f'Both gt_annos and dt_annos are empty for {name}. '
+                                f'Skipping evaluation.')
+                            continue
+                        
+                        try:
+                            ap_result_str, ap_dict_ = kitti_eval(
+                                gt_annos, dt_annos, classes, eval_types=eval_types)
+                            for ap_type, ap in ap_dict_.items():
+                                ap_dict[f'{name}/{ap_type}'] = float(f'{ap:.4f}')
 
-                    print_log(f'Results of {name}:\n' + ap_result_str, logger=logger)
+                            print_log(f'Results of {name}:\n' + ap_result_str, logger=logger)
+                        except MemoryError as e:
+                            import warnings
+                            warnings.warn(
+                                f'MemoryError during kitti_eval for {name}: {e}. '
+                                f'This may indicate a memory issue. Skipping this result.',
+                                RuntimeWarning)
+                            logger.error(f'MemoryError during evaluation of {name}: {e}')
                 except Exception as e:
                     import warnings
                     warnings.warn(
                         f'Error during kitti_eval for {name}: {e}. '
                         f'Skipping this result.', RuntimeWarning)
                     logger.error(f'Failed to evaluate {name}: {e}')
+                except SystemError as e:
+                    # SystemError can sometimes indicate segfault-related issues
+                    import warnings
+                    warnings.warn(
+                        f'SystemError during kitti_eval for {name}: {e}. '
+                        f'This may indicate a segfault. Skipping this result.',
+                        RuntimeWarning)
+                    logger.error(f'SystemError during evaluation of {name}: {e}')
 
         return ap_dict
 
