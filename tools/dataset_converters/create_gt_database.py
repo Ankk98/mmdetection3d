@@ -14,6 +14,10 @@ from pycocotools.coco import COCO
 
 from mmdet3d.registry import DATASETS
 from mmdet3d.structures.ops import box_np_ops as box_np_ops
+from mmdet3d.utils import register_all_modules
+
+# Register all mmdet3d modules to ensure transforms are available in the registry
+register_all_modules()
 
 # Import transforms module to register all transforms (required for dataset building)
 import mmdet3d.datasets.transforms  # noqa: F401
