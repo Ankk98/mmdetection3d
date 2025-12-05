@@ -529,17 +529,6 @@ class KittiMetric(BaseMetric):
                             break
                     
                     if not validation_failed:
-                        # Final safety: wrap kitti_eval in a way that can catch segfaults
-                        # Note: Python can't catch segfaults, but we can validate inputs
-                        # to minimize the chance
-                        # Check if we should skip evaluation
-                        if self.skip_eval_on_segfault:
-                            import os
-                            if os.environ.get('MMDET3D_SKIP_KITTI_EVAL', '0') == '1':
-                                logger.warning(
-                                    f'Skipping kitti_eval for {name} due to skip_eval_on_segfault flag.')
-                                continue
-                        
                         # Additional check: ensure we don't have all-empty arrays which
                         # can cause issues in calculate_iou_partly
                         total_gt_boxes = sum(len(anno['bbox']) for anno in gt_annos)
@@ -551,27 +540,101 @@ class KittiMetric(BaseMetric):
                                 f'Skipping evaluation.')
                             continue
                         
+                        # Validate data to prevent segfaults in numba JIT code
+                        # Check for NaN/Inf values and invalid shapes that can cause segfaults
+                        data_valid = True
+                        validation_errors = []
+                        
+                        for i, (gt_anno, dt_anno) in enumerate(zip(gt_annos, dt_annos)):
+                            # Validate GT data
+                            for key in ['bbox', 'dimensions', 'location', 'rotation_y']:
+                                arr = gt_anno.get(key, np.array([]))
+                                if arr.size > 0:
+                                    if not np.all(np.isfinite(arr)):
+                                        data_valid = False
+                                        validation_errors.append(
+                                            f'GT[{i}][{key}] contains NaN/Inf')
+                                    if key == 'bbox' and arr.ndim == 2 and arr.shape[1] != 4:
+                                        data_valid = False
+                                        validation_errors.append(
+                                            f'GT[{i}][{key}] has wrong shape {arr.shape}, expected (N, 4)')
+                                    if key == 'dimensions' and arr.ndim == 2 and arr.shape[1] != 3:
+                                        data_valid = False
+                                        validation_errors.append(
+                                            f'GT[{i}][{key}] has wrong shape {arr.shape}, expected (N, 3)')
+                            
+                            # Validate DT data
+                            for key in ['bbox', 'dimensions', 'location', 'rotation_y', 'score']:
+                                arr = dt_anno.get(key, np.array([]))
+                                if arr.size > 0:
+                                    if not np.all(np.isfinite(arr)):
+                                        data_valid = False
+                                        validation_errors.append(
+                                            f'DT[{i}][{key}] contains NaN/Inf')
+                                    if key == 'bbox' and arr.ndim == 2 and arr.shape[1] != 4:
+                                        data_valid = False
+                                        validation_errors.append(
+                                            f'DT[{i}][{key}] has wrong shape {arr.shape}, expected (N, 4)')
+                                    if key == 'dimensions' and arr.ndim == 2 and arr.shape[1] != 3:
+                                        data_valid = False
+                                        validation_errors.append(
+                                            f'DT[{i}][{key}] has wrong shape {arr.shape}, expected (N, 3)')
+                        
+                        if not data_valid:
+                            error_msg = '; '.join(validation_errors[:5])  # Show first 5 errors
+                            if len(validation_errors) > 5:
+                                error_msg += f' ... and {len(validation_errors) - 5} more'
+                            
+                            if self.skip_eval_on_segfault:
+                                logger.warning(
+                                    f'Data validation failed for {name}: {error_msg}. '
+                                    f'Skipping kitti_eval to avoid segfault. '
+                                    f'Results have been saved to pkl file but metrics will not be computed.')
+                                continue
+                            else:
+                                logger.error(
+                                    f'Data validation failed for {name}: {error_msg}. '
+                                    f'This will likely cause a segfault. '
+                                    f'Set skip_eval_on_segfault=True to skip evaluation.')
+                                # Continue anyway if skip_eval_on_segfault is False
+                        
                         # Log before calling kitti_eval to help identify where segfault occurs
                         logger.info(
                             f'Calling kitti_eval for {name} with {len(gt_annos)} GT annotations, '
                             f'{total_gt_boxes} GT boxes, {total_dt_boxes} DT boxes, '
                             f'eval_types={eval_types}')
                         
+                        # Try evaluation - if skip_eval_on_segfault is True and validation failed,
+                        # we already skipped. Otherwise, attempt evaluation with error handling.
                         try:
+                            # Use standard kitti_eval
                             ap_result_str, ap_dict_ = kitti_eval(
                                 gt_annos, dt_annos, classes, eval_types=eval_types)
                             logger.info(f'kitti_eval completed successfully for {name}')
                             for ap_type, ap in ap_dict_.items():
                                 ap_dict[f'{name}/{ap_type}'] = float(f'{ap:.4f}')
-
                             print_log(f'Results of {name}:\n' + ap_result_str, logger=logger)
-                        except MemoryError as e:
+                        except (MemoryError, ValueError, TypeError, IndexError) as e:
+                            # These are catchable Python exceptions
                             import warnings
                             warnings.warn(
-                                f'MemoryError during kitti_eval for {name}: {e}. '
-                                f'This may indicate a memory issue. Skipping this result.',
-                                RuntimeWarning)
-                            logger.error(f'MemoryError during evaluation of {name}: {e}')
+                                f'Python exception during kitti_eval for {name}: {e}. '
+                                f'Skipping this result.', RuntimeWarning)
+                            logger.error(f'Exception during evaluation of {name}: {e}')
+                            if self.skip_eval_on_segfault:
+                                logger.warning(
+                                    f'Evaluation failed for {name}. Results saved to pkl file. '
+                                    f'You can evaluate separately using the saved predictions.')
+                        except Exception as e:
+                            # Catch any other Python exceptions
+                            logger.error(f'Unexpected error during kitti_eval for {name}: {e}')
+                            if self.skip_eval_on_segfault:
+                                logger.warning(
+                                    f'Evaluation failed for {name}. Results saved to pkl file. '
+                                    f'You can evaluate separately using the saved predictions.')
+                        # Note: Segfaults cannot be caught in Python. If a segfault occurs,
+                        # the process will crash. The data validation above should prevent most segfaults.
+                        # If segfaults still occur, set skip_eval_on_segfault=True and evaluate separately.
                 except Exception as e:
                     import warnings
                     warnings.warn(
