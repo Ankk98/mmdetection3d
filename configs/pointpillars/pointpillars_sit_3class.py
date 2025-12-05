@@ -77,10 +77,37 @@ test_pipeline = [
     dict(type='Pack3DDetInputs', keys=['points'])
 ]
 
+# Validation pipeline: similar to test_pipeline but loads annotations for loss computation
+val_pipeline = [
+    dict(
+        type='LoadPointsFromFile',
+        coord_type='LIDAR',
+        load_dim=4,
+        use_dim=4,
+        backend_args=backend_args),
+    dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True),
+    dict(
+        type='MultiScaleFlipAug3D',
+        img_scale=(1333, 800),
+        pts_scale_ratio=1,
+        flip=False,
+        transforms=[
+            dict(
+                type='GlobalRotScaleTrans',
+                rot_range=[0, 0],
+                scale_ratio_range=[1., 1.],
+                translation_std=[0, 0, 0]),
+            dict(type='RandomFlip3D'),
+            dict(
+                type='PointsRangeFilter', point_cloud_range=point_cloud_range)
+        ]),
+    dict(type='Pack3DDetInputs', keys=['points', 'gt_bboxes_3d', 'gt_labels_3d'])
+]
+
 train_dataloader = dict(
     dataset=dict(pipeline=train_pipeline, metainfo=metainfo))
 test_dataloader = dict(dataset=dict(pipeline=test_pipeline, metainfo=metainfo))
-val_dataloader = dict(dataset=dict(pipeline=test_pipeline, metainfo=metainfo))
+val_dataloader = dict(dataset=dict(pipeline=val_pipeline, metainfo=metainfo))
 
 # Model settings for SiT dataset
 # Calculate output shape based on point cloud range and voxel size
@@ -186,15 +213,32 @@ train_cfg = dict(by_epoch=True, max_epochs=epoch_num, val_interval=2)
 val_cfg = dict()
 test_cfg = dict()
 
+# Override val_evaluator to enable mAP computation (format_only=False)
+# Note: The base config sets format_only=True to avoid segfaults with native KITTI eval.
+# Setting it to False enables Python-based evaluation which should work with SiT data.
+val_evaluator = dict(
+    type='KittiMetric',
+    ann_file=data_root + 'sit_infos_val.pkl',
+    metric='bbox',
+    format_only=False,  # Enable mAP computation
+    backend_args=backend_args)
+
 # Enable checkpoint saving (default_runtime has interval=-1 which disables it)
-# Note: Since format_only=True, we can't save "best" checkpoint (no metrics)
+# Now that we have metrics, we can save "best" checkpoint based on mAP
 default_hooks = dict(
     checkpoint=dict(
         type='CheckpointHook',
-        interval=5,  # Save checkpoint every 5 epochs
+        interval=2,  # Save checkpoint every 2 epochs
         max_keep_ckpts=5,  # Keep the latest 5 checkpoints (saves disk space)
         save_optimizer=True,  # Also save optimizer state for resuming
-        by_epoch=True  # Save by epoch (not iteration)
+        by_epoch=True,  # Save by epoch (not iteration)
+        save_best='Kitti metric/pred_instances_3d/3d/overall_3d_11',  # Save best based on 3D mAP
+        rule='greater'  # Higher mAP is better
+    ),
+    # Add validation loss hook to compute and log validation loss
+    val_loss=dict(
+        type='ValLossHook',
+        interval=1  # Compute loss for every validation batch
     )
 )
 
