@@ -740,6 +740,9 @@ def create_sit_database(data_path: str,
         pkl_prefix (str): Prefix of the info/db files (default: 'sit').
         relative_path (bool): Whether to use relative paths in dbinfos.
     """
+    # Import transforms module to register all transforms (required for database creation)
+    import mmdet3d.datasets.transforms  # noqa: F401
+    
     from tools.dataset_converters.create_gt_database import \
         create_groundtruth_database
 

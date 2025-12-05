@@ -183,15 +183,27 @@ class SiTDataset(KittiDataset):
             ann_info = self._remove_dontcare(ann_info)
 
             if filter_mask is not None and instances is not None:
-                if len(instances) == len(filter_mask):
-                    ann_info['instances'] = [
-                        inst for inst, keep in zip(instances, filter_mask)
-                        if keep
-                    ]
+                # After _remove_dontcare, gt_labels_3d and gt_bboxes_3d have been filtered.
+                # We must ensure instances list matches the filtered arrays' length to
+                # maintain consistency. The filtered array length is the ground truth.
+                filtered_array_len = len(ann_info['gt_labels_3d'])
+                
+                # Filter instances using the mask, but only consider as many instances
+                # as we have in the filter_mask to avoid index errors
+                num_to_check = min(len(instances), len(filter_mask))
+                filtered_instances = [
+                    inst for inst, keep in zip(instances[:num_to_check], filter_mask[:num_to_check])
+                    if keep
+                ]
+                
+                # Ensure the filtered instances list matches the filtered array length.
+                # If there's still a mismatch, truncate to match (the arrays are the source of truth).
+                if len(filtered_instances) == filtered_array_len:
+                    ann_info['instances'] = filtered_instances
                 else:
-                    # Length mismatch is unexpected; fall back to unfiltered
-                    # instances to avoid silent truncation in this edge case.
-                    ann_info['instances'] = instances
+                    # Length mismatch: use filtered array length as ground truth and truncate
+                    # instances to match. This ensures consistency even if there's a deeper issue.
+                    ann_info['instances'] = filtered_instances[:filtered_array_len]
 
         # Convert numpy array to LiDARInstance3DBoxes for LiDAR-only dataset.
         # SiT uses LiDAR coordinates directly, so no camera-to-lidar transform
