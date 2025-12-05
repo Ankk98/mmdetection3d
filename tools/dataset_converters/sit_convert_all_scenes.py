@@ -53,9 +53,29 @@ def main():
                        help='Create database files after conversion')
     parser.add_argument('--converter-script', 
                        default='tools/dataset_converters/sit_converter.py',
-                       help='Path to sit_converter.py script')
+                       help='Path to sit_converter.py script (relative to project root)')
     
     args = parser.parse_args()
+    
+    # Get project root (3 levels up from this script: tools/dataset_converters/sit_convert_all_scenes.py)
+    # Use absolute path to ensure it works regardless of where script is called from
+    script_path = osp.abspath(__file__)
+    script_dir = osp.dirname(script_path)
+    project_root = osp.dirname(osp.dirname(script_dir))
+    
+    # Ensure project_root is absolute and exists
+    project_root = osp.abspath(project_root)
+    if not osp.exists(project_root):
+        print(f"Error: Project root not found: {project_root}")
+        return 1
+    
+    # Make converter script path absolute if it's relative
+    if not osp.isabs(args.converter_script):
+        converter_path = osp.join(project_root, args.converter_script)
+        if not osp.exists(converter_path):
+            print(f"Error: Converter script not found: {converter_path}")
+            return 1
+        args.converter_script = converter_path
     
     # Expected scene types
     scene_types = [
@@ -103,9 +123,11 @@ def main():
         print("=" * 80)
         
         # Build command (don't create info/db during individual conversions)
+        # Use relative path for converter script since we set cwd to project_root
+        converter_rel_path = osp.relpath(args.converter_script, project_root)
         cmd = [
             sys.executable,
-            args.converter_script,
+            converter_rel_path,
             '--sit-root', scene_path,
             '--output-root', args.output_root,
             '--convert-all',
@@ -114,8 +136,10 @@ def main():
         
         # Note: We skip --create-info and --create-db here, will do at end
         
-        # Run converter
-        result = subprocess.run(cmd, cwd=osp.dirname(osp.dirname(osp.dirname(__file__))))
+        # Run converter from project root
+        print(f"Running: {' '.join(cmd)}")
+        print(f"Working directory: {project_root}")
+        result = subprocess.run(cmd, cwd=project_root)
         
         if result.returncode != 0:
             print(f"Warning: Conversion failed for {scene_type}")
@@ -149,6 +173,9 @@ def main():
     
     # Just recreate ImageSets - we need to do this manually since all frames are already converted
     # The create_imagesets function will scan the output directory
+    # Add project root to path for imports
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
     from tools.dataset_converters.sit_converter import create_imagesets, create_sit_infos, create_sit_database
     
     # Get all sequences (for ImageSets creation)
