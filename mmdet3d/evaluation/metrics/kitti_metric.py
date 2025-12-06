@@ -59,8 +59,7 @@ class KittiMetric(BaseMetric):
                  format_only: bool = False,
                  submission_prefix: Optional[str] = None,
                  collect_device: str = 'cpu',
-                 backend_args: Optional[dict] = None,
-                 skip_eval_on_segfault: bool = False) -> None:
+                 backend_args: Optional[dict] = None) -> None:
         self.default_prefix = 'Kitti metric'
         super(KittiMetric, self).__init__(
             collect_device=collect_device, prefix=prefix)
@@ -77,7 +76,6 @@ class KittiMetric(BaseMetric):
         self.submission_prefix = submission_prefix
         self.default_cam_key = default_cam_key
         self.backend_args = backend_args
-        self.skip_eval_on_segfault = skip_eval_on_segfault
 
         allowed_metrics = ['bbox', 'img_bbox', 'mAP', 'LET_mAP']
         self.metrics = metric if isinstance(metric, list) else [metric]
@@ -128,38 +126,17 @@ class KittiMetric(BaseMetric):
                     }
                     for instance in annos['instances']:
                         label = instance['bbox_label']
-                        # Some pipelines may encode "unknown" / filtered
-                        # instances with label -1. Skip any label that is
-                        # negative or not present in label2cat to avoid
-                        # KeyError when doing label2cat[label].
-                        if label not in label2cat:
-                            continue
                         kitti_annos['name'].append(label2cat[label])
-                        # Some datasets (e.g. SiT) may omit KITTI-specific
-                        # camera fields like truncated/occluded/alpha/score
-                        # from their per-instance dicts. Fall back to sensible
-                        # defaults so evaluation can still run.
-                        kitti_annos['truncated'].append(
-                            instance.get('truncated', 0.0))
-                        kitti_annos['occluded'].append(
-                            instance.get('occluded', 0))
-                        kitti_annos['alpha'].append(
-                            instance.get('alpha', 0.0))
-                        # Some derived datasets may omit 2D bbox in their
-                        # per-instance dicts. Fall back to a zero box so that
-                        # conversion/evaluation code can still run.
-                        kitti_annos['bbox'].append(
-                            instance.get('bbox', [0.0, 0.0, 0.0, 0.0]))
-                        # Some derived datasets may also omit 3D boxes; in that
-                        # case, fall back to a zero box so evaluation code can
-                        # still run, even though the metrics will be degenerate.
-                        bbox_3d = instance.get('bbox_3d',
-                                               [0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                                                0.0])
-                        kitti_annos['location'].append(bbox_3d[:3])
-                        kitti_annos['dimensions'].append(bbox_3d[3:6])
-                        kitti_annos['rotation_y'].append(bbox_3d[6])
-                        kitti_annos['score'].append(instance.get('score', 1.0))
+                        kitti_annos['truncated'].append(instance['truncated'])
+                        kitti_annos['occluded'].append(instance['occluded'])
+                        kitti_annos['alpha'].append(instance['alpha'])
+                        kitti_annos['bbox'].append(instance['bbox'])
+                        kitti_annos['location'].append(instance['bbox_3d'][:3])
+                        kitti_annos['dimensions'].append(
+                            instance['bbox_3d'][3:6])
+                        kitti_annos['rotation_y'].append(
+                            instance['bbox_3d'][6])
+                        kitti_annos['score'].append(instance['score'])
                     for name in kitti_annos:
                         kitti_annos[name] = np.array(kitti_annos[name])
                 data_annos[i]['kitti_annos'] = kitti_annos
@@ -200,36 +177,17 @@ class KittiMetric(BaseMetric):
             Dict[str, float]: The computed metrics. The keys are the names of
             the metrics, and the values are corresponding results.
         """
-        # Log immediately to help identify if segfault happens here
-        import sys
-        sys.stdout.flush()
-        print("DEBUG: compute_metrics called", flush=True)
-        
         logger: MMLogger = MMLogger.get_current_instance()
-        print("DEBUG: Got logger", flush=True)
-        
         self.classes = self.dataset_meta['classes']
-        print(f"DEBUG: Got classes: {self.classes}", flush=True)
 
-        # Note: We don't skip evaluation here even if skip_eval_on_segfault is True.
-        # We'll attempt evaluation and only skip if data validation fails or errors occur.
-        # This allows evaluation to proceed normally when data is valid.
-        
-        print("DEBUG: Loading annotations...", flush=True)
         # load annotations
         pkl_infos = load(self.ann_file, backend_args=self.backend_args)
-        print("DEBUG: Annotations loaded", flush=True)
-        
         self.data_infos = self.convert_annos_to_kitti_annos(pkl_infos)
-        print("DEBUG: Annotations converted", flush=True)
-        
-        print("DEBUG: Formatting results...", flush=True)
         result_dict, tmp_dir = self.format_results(
             results,
             pklfile_prefix=self.pklfile_prefix,
             submission_prefix=self.submission_prefix,
             classes=self.classes)
-        print("DEBUG: Results formatted", flush=True)
 
         metric_dict = {}
 
@@ -237,101 +195,24 @@ class KittiMetric(BaseMetric):
             logger.info(
                 f'results are saved in {osp.dirname(self.submission_prefix)}')
             return metric_dict
-        
-        # Note: We proceed with evaluation. Data validation and error handling
-        # will skip evaluation only if problems are detected.
-        
-        # Log that we're starting evaluation
-        logger.info('Starting KITTI evaluation to compute mAP metrics...')
 
-        # Safely build gt_annos with validation
-        gt_annos = []
-        for result in results:
-            try:
-                sample_idx = result['sample_idx']
-                if sample_idx < 0 or sample_idx >= len(self.data_infos):
-                    import warnings
-                    warnings.warn(
-                        f'Invalid sample_idx {sample_idx}, skipping. '
-                        f'Valid range: [0, {len(self.data_infos)}).',
-                        RuntimeWarning)
-                    # Use empty annotation as fallback
-                    gt_annos.append({
-                        'name': np.array([]),
-                        'truncated': np.array([]),
-                        'occluded': np.array([]),
-                        'alpha': np.array([]),
-                        'bbox': np.zeros([0, 4]),
-                        'dimensions': np.zeros([0, 3]),
-                        'location': np.zeros([0, 3]),
-                        'rotation_y': np.array([]),
-                        'score': np.array([]),
-                    })
-                    continue
-                info = self.data_infos[sample_idx]
-                if 'kitti_annos' not in info:
-                    import warnings
-                    warnings.warn(
-                        f'Missing kitti_annos for sample_idx {sample_idx}, '
-                        f'using empty annotation.', RuntimeWarning)
-                    gt_annos.append({
-                        'name': np.array([]),
-                        'truncated': np.array([]),
-                        'occluded': np.array([]),
-                        'alpha': np.array([]),
-                        'bbox': np.zeros([0, 4]),
-                        'dimensions': np.zeros([0, 3]),
-                        'location': np.zeros([0, 3]),
-                        'rotation_y': np.array([]),
-                        'score': np.array([]),
-                    })
-                else:
-                    gt_annos.append(info['kitti_annos'])
-            except (KeyError, IndexError, TypeError) as e:
-                import warnings
-                warnings.warn(
-                    f'Error processing result for sample_idx {result.get("sample_idx", "unknown")}: {e}. '
-                    f'Using empty annotation.', RuntimeWarning)
-                gt_annos.append({
-                    'name': np.array([]),
-                    'truncated': np.array([]),
-                    'occluded': np.array([]),
-                    'alpha': np.array([]),
-                    'bbox': np.zeros([0, 4]),
-                    'dimensions': np.zeros([0, 3]),
-                    'location': np.zeros([0, 3]),
-                    'rotation_y': np.array([]),
-                    'score': np.array([]),
-                })
+        gt_annos = [
+            self.data_infos[result['sample_idx']]['kitti_annos']
+            for result in results
+        ]
 
         for metric in self.metrics:
-            try:
-                logger.info(f'Computing {metric} metric...')
-                ap_dict = self.kitti_evaluate(
-                    result_dict,
-                    gt_annos,
-                    metric=metric,
-                    logger=logger,
-                    classes=self.classes)
-                for result in ap_dict:
-                    metric_dict[result] = ap_dict[result]
-                logger.info(f'Successfully computed {metric} metric. Results: {list(ap_dict.keys())}')
-            except Exception as e:
-                import warnings
-                warnings.warn(
-                    f'Error during kitti_evaluate for metric {metric}: {e}. '
-                    f'Skipping this metric.', RuntimeWarning)
-                logger.error(f'Failed to evaluate metric {metric}: {e}')
-                # Continue with other metrics
+            ap_dict = self.kitti_evaluate(
+                result_dict,
+                gt_annos,
+                metric=metric,
+                logger=logger,
+                classes=self.classes)
+            for result in ap_dict:
+                metric_dict[result] = ap_dict[result]
 
         if tmp_dir is not None:
             tmp_dir.cleanup()
-        
-        if metric_dict:
-            logger.info(f'Evaluation completed. Computed {len(metric_dict)} metrics: {list(metric_dict.keys())[:5]}...')
-        else:
-            logger.warning('Evaluation completed but no metrics were computed. This may indicate an issue.')
-        
         return metric_dict
 
     def kitti_evaluate(self,
@@ -354,308 +235,18 @@ class KittiMetric(BaseMetric):
         Returns:
             Dict[str, float]: Results of each evaluation metric.
         """
-        # Validate inputs before evaluation to prevent segfaults
-        if not isinstance(results_dict, dict):
-            raise TypeError(f'results_dict must be a dict, got {type(results_dict)}')
-        if not isinstance(gt_annos, list):
-            raise TypeError(f'gt_annos must be a list, got {type(gt_annos)}')
-        if classes is None:
-            raise ValueError('classes must be provided')
-        
-        # Validate gt_annos structure and ensure arrays are safe for C extensions
-        for i, gt_anno in enumerate(gt_annos):
-            if not isinstance(gt_anno, dict):
-                raise TypeError(f'gt_annos[{i}] must be a dict, got {type(gt_anno)}')
-            # Check required keys exist and are numpy arrays
-            required_keys = ['name', 'truncated', 'occluded', 'alpha', 'bbox',
-                          'dimensions', 'location', 'rotation_y', 'score']
-            for key in required_keys:
-                if key not in gt_anno:
-                    raise KeyError(f'Missing key "{key}" in gt_annos[{i}]')
-                if not isinstance(gt_anno[key], np.ndarray):
-                    raise TypeError(
-                        f'gt_annos[{i}]["{key}"] must be np.ndarray, '
-                        f'got {type(gt_anno[key])}')
-                # Ensure arrays are C-contiguous and have valid dtypes for C extensions
-                arr = gt_anno[key]
-                if not arr.flags['C_CONTIGUOUS']:
-                    gt_anno[key] = np.ascontiguousarray(arr)
-                # Validate dtype - C extensions expect specific dtypes
-                if key in ['bbox', 'dimensions', 'location', 'rotation_y', 'alpha', 'score']:
-                    if arr.dtype not in [np.float32, np.float64]:
-                        gt_anno[key] = arr.astype(np.float32)
-                elif key in ['truncated', 'occluded']:
-                    if arr.dtype not in [np.int32, np.int64]:
-                        gt_anno[key] = arr.astype(np.int32)
-                # Check for NaN/Inf that could cause segfaults in C code
-                if arr.dtype in [np.float32, np.float64] and arr.size > 0:
-                    if not np.all(np.isfinite(arr)):
-                        import warnings
-                        warnings.warn(
-                            f'gt_annos[{i}]["{key}"] contains NaN/Inf values. '
-                            f'Replacing with zeros to prevent segfault.',
-                            RuntimeWarning)
-                        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-                        gt_anno[key] = np.ascontiguousarray(arr)
-        
         ap_dict = dict()
         for name in results_dict:
-            # CRITICAL FIX: For LiDAR-only datasets (no camera), 2D bbox evaluation fails
-            # because GT 2D boxes are [0,0,0,0] placeholders, while predictions have
-            # projected 2D boxes. They can't match, resulting in mAP=0.0000.
-            # Solution: Use BEV evaluation for 3D predictions in LiDAR-only datasets.
-            
-            # Check if this is a LiDAR-only dataset by checking if GT has zero 2D boxes
-            # We detect this by checking if we're evaluating 3D predictions and metric is bbox
-            is_lidar_only_3d_pred = (name == 'pred_instances_3d' and metric == 'bbox')
-            
-            if is_lidar_only_3d_pred:
-                # For 3D predictions with bbox metric on LiDAR-only dataset, use BEV instead
-                # BEV works in LiDAR space and doesn't require camera calibration
-                eval_types = ['bev']
-            elif metric == 'bbox' or name == 'pred_instances' or metric == 'img_bbox':
-                # 2D predictions: use bbox evaluation
+            if name == 'pred_instances' or metric == 'img_bbox':
                 eval_types = ['bbox']
-            elif metric == 'bev':
-                # Explicit BEV evaluation
-                eval_types = ['bev']
             else:
-                # Default: evaluate bbox and bev, but skip 3d to avoid segfaults
-                # 3D evaluation requires camera coordinates which SiT doesn't have properly
-                eval_types = ['bbox', 'bev']  # Removed '3d' to prevent segfaults
-            
-            # Validate results_dict[name] before evaluation
-            dt_annos = results_dict[name]
-            if not isinstance(dt_annos, list):
-                import warnings
-                warnings.warn(
-                    f'results_dict["{name}"] must be a list, got {type(dt_annos)}. '
-                    f'Skipping evaluation for {name}.', RuntimeWarning)
-                continue
-            
-            # Validate length match
-            if len(dt_annos) != len(gt_annos):
-                import warnings
-                warnings.warn(
-                    f'Length mismatch: dt_annos has {len(dt_annos)} items, '
-                    f'gt_annos has {len(gt_annos)} items. Skipping evaluation for {name}.',
-                    RuntimeWarning)
-                continue
-            
-            # Validate dt_annos structure and ensure arrays are safe for C extensions
-            validation_failed = False
-            for i, dt_anno in enumerate(dt_annos):
-                if not isinstance(dt_anno, dict):
-                    import warnings
-                    warnings.warn(
-                        f'dt_annos[{i}] must be a dict, got {type(dt_anno)}. '
-                        f'Skipping evaluation for {name}.', RuntimeWarning)
-                    validation_failed = True
-                    break
-                # Check required keys
-                required_keys = ['name', 'truncated', 'occluded', 'alpha', 'bbox',
-                              'dimensions', 'location', 'rotation_y', 'score']
-                for key in required_keys:
-                    if key not in dt_anno:
-                        import warnings
-                        warnings.warn(
-                            f'Missing key "{key}" in dt_annos[{i}]. '
-                            f'Skipping evaluation for {name}.', RuntimeWarning)
-                        validation_failed = True
-                        break
-                    if not isinstance(dt_anno[key], np.ndarray):
-                        import warnings
-                        warnings.warn(
-                            f'dt_annos[{i}]["{key}"] must be np.ndarray, '
-                            f'got {type(dt_anno[key])}. Skipping evaluation for {name}.',
-                            RuntimeWarning)
-                        validation_failed = True
-                        break
-                    # Ensure arrays are C-contiguous and have valid dtypes
-                    arr = dt_anno[key]
-                    if not arr.flags['C_CONTIGUOUS']:
-                        dt_anno[key] = np.ascontiguousarray(arr)
-                    # Validate dtype - C extensions expect specific dtypes
-                    if key in ['bbox', 'dimensions', 'location', 'rotation_y', 'alpha', 'score']:
-                        if arr.dtype not in [np.float32, np.float64]:
-                            dt_anno[key] = arr.astype(np.float32)
-                    elif key in ['truncated', 'occluded']:
-                        if arr.dtype not in [np.int32, np.int64]:
-                            dt_anno[key] = arr.astype(np.int32)
-                    # Check for NaN/Inf that could cause segfaults in C code
-                    if arr.dtype in [np.float32, np.float64] and arr.size > 0:
-                        if not np.all(np.isfinite(arr)):
-                            import warnings
-                            warnings.warn(
-                                f'dt_annos[{i}]["{key}"] contains NaN/Inf values. '
-                                f'Replacing with zeros to prevent segfault.',
-                                RuntimeWarning)
-                            arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-                            dt_anno[key] = np.ascontiguousarray(arr)
-                if validation_failed:
-                    break
-            
-            if not validation_failed:
-                # All validations passed, proceed with evaluation
-                try:
-                    # Additional safety check: ensure array shapes are consistent
-                    # This prevents segfaults in calculate_iou_partly
-                    for i, (gt_anno, dt_anno) in enumerate(zip(gt_annos, dt_annos)):
-                        # Check that arrays have expected shapes
-                        if len(gt_anno['bbox']) > 0 and gt_anno['bbox'].shape[1] != 4:
-                            import warnings
-                            warnings.warn(
-                                f'gt_annos[{i}]["bbox"] has wrong shape {gt_anno["bbox"].shape}, '
-                                f'expected (N, 4). Skipping evaluation for {name}.',
-                                RuntimeWarning)
-                            validation_failed = True
-                            break
-                        if len(dt_anno['bbox']) > 0 and dt_anno['bbox'].shape[1] != 4:
-                            import warnings
-                            warnings.warn(
-                                f'dt_annos[{i}]["bbox"] has wrong shape {dt_anno["bbox"].shape}, '
-                                f'expected (N, 4). Skipping evaluation for {name}.',
-                                RuntimeWarning)
-                            validation_failed = True
-                            break
-                        if len(gt_anno['dimensions']) > 0 and gt_anno['dimensions'].shape[1] != 3:
-                            import warnings
-                            warnings.warn(
-                                f'gt_annos[{i}]["dimensions"] has wrong shape {gt_anno["dimensions"].shape}, '
-                                f'expected (N, 3). Skipping evaluation for {name}.',
-                                RuntimeWarning)
-                            validation_failed = True
-                            break
-                        if len(dt_anno['dimensions']) > 0 and dt_anno['dimensions'].shape[1] != 3:
-                            import warnings
-                            warnings.warn(
-                                f'dt_annos[{i}]["dimensions"] has wrong shape {dt_anno["dimensions"].shape}, '
-                                f'expected (N, 3). Skipping evaluation for {name}.',
-                                RuntimeWarning)
-                            validation_failed = True
-                            break
-                    
-                    if not validation_failed:
-                        # Additional check: ensure we don't have all-empty arrays which
-                        # can cause issues in calculate_iou_partly
-                        total_gt_boxes = sum(len(anno['bbox']) for anno in gt_annos)
-                        total_dt_boxes = sum(len(anno['bbox']) for anno in dt_annos)
-                        
-                        if total_gt_boxes == 0 and total_dt_boxes == 0:
-                            logger.warning(
-                                f'Both gt_annos and dt_annos are empty for {name}. '
-                                f'Skipping evaluation.')
-                            continue
-                        
-                        # Validate data to prevent segfaults in numba JIT code
-                        # Check for NaN/Inf values and invalid shapes that can cause segfaults
-                        data_valid = True
-                        validation_errors = []
-                        
-                        for i, (gt_anno, dt_anno) in enumerate(zip(gt_annos, dt_annos)):
-                            # Validate GT data
-                            for key in ['bbox', 'dimensions', 'location', 'rotation_y']:
-                                arr = gt_anno.get(key, np.array([]))
-                                if arr.size > 0:
-                                    if not np.all(np.isfinite(arr)):
-                                        data_valid = False
-                                        validation_errors.append(
-                                            f'GT[{i}][{key}] contains NaN/Inf')
-                                    if key == 'bbox' and arr.ndim == 2 and arr.shape[1] != 4:
-                                        data_valid = False
-                                        validation_errors.append(
-                                            f'GT[{i}][{key}] has wrong shape {arr.shape}, expected (N, 4)')
-                                    if key == 'dimensions' and arr.ndim == 2 and arr.shape[1] != 3:
-                                        data_valid = False
-                                        validation_errors.append(
-                                            f'GT[{i}][{key}] has wrong shape {arr.shape}, expected (N, 3)')
-                            
-                            # Validate DT data
-                            for key in ['bbox', 'dimensions', 'location', 'rotation_y', 'score']:
-                                arr = dt_anno.get(key, np.array([]))
-                                if arr.size > 0:
-                                    if not np.all(np.isfinite(arr)):
-                                        data_valid = False
-                                        validation_errors.append(
-                                            f'DT[{i}][{key}] contains NaN/Inf')
-                                    if key == 'bbox' and arr.ndim == 2 and arr.shape[1] != 4:
-                                        data_valid = False
-                                        validation_errors.append(
-                                            f'DT[{i}][{key}] has wrong shape {arr.shape}, expected (N, 4)')
-                                    if key == 'dimensions' and arr.ndim == 2 and arr.shape[1] != 3:
-                                        data_valid = False
-                                        validation_errors.append(
-                                            f'DT[{i}][{key}] has wrong shape {arr.shape}, expected (N, 3)')
-                        
-                        if not data_valid:
-                            error_msg = '; '.join(validation_errors[:5])  # Show first 5 errors
-                            if len(validation_errors) > 5:
-                                error_msg += f' ... and {len(validation_errors) - 5} more'
-                            
-                            if self.skip_eval_on_segfault:
-                                logger.warning(
-                                    f'Data validation failed for {name}: {error_msg}. '
-                                    f'Skipping kitti_eval to avoid segfault. '
-                                    f'Results have been saved to pkl file but metrics will not be computed.')
-                                continue
-                            else:
-                                logger.error(
-                                    f'Data validation failed for {name}: {error_msg}. '
-                                    f'This will likely cause a segfault. '
-                                    f'Set skip_eval_on_segfault=True to skip evaluation.')
-                                # Continue anyway if skip_eval_on_segfault is False
-                        
-                        # Log before calling kitti_eval to help identify where segfault occurs
-                        logger.info(
-                            f'Calling kitti_eval for {name} with {len(gt_annos)} GT annotations, '
-                            f'{total_gt_boxes} GT boxes, {total_dt_boxes} DT boxes, '
-                            f'eval_types={eval_types}')
-                        
-                        # Try evaluation - if skip_eval_on_segfault is True and validation failed,
-                        # we already skipped. Otherwise, attempt evaluation with error handling.
-                        try:
-                            # Use standard kitti_eval
-                            ap_result_str, ap_dict_ = kitti_eval(
-                                gt_annos, dt_annos, classes, eval_types=eval_types)
-                            logger.info(f'kitti_eval completed successfully for {name}')
-                            for ap_type, ap in ap_dict_.items():
-                                ap_dict[f'{name}/{ap_type}'] = float(f'{ap:.4f}')
-                            print_log(f'Results of {name}:\n' + ap_result_str, logger=logger)
-                        except (MemoryError, ValueError, TypeError, IndexError) as e:
-                            # These are catchable Python exceptions
-                            import warnings
-                            warnings.warn(
-                                f'Python exception during kitti_eval for {name}: {e}. '
-                                f'Skipping this result.', RuntimeWarning)
-                            logger.error(f'Exception during evaluation of {name}: {e}')
-                            if self.skip_eval_on_segfault:
-                                logger.warning(
-                                    f'Evaluation failed for {name}. Results saved to pkl file. '
-                                    f'You can evaluate separately using the saved predictions.')
-                        except Exception as e:
-                            # Catch any other Python exceptions
-                            logger.error(f'Unexpected error during kitti_eval for {name}: {e}')
-                            if self.skip_eval_on_segfault:
-                                logger.warning(
-                                    f'Evaluation failed for {name}. Results saved to pkl file. '
-                                    f'You can evaluate separately using the saved predictions.')
-                        # Note: Segfaults cannot be caught in Python. If a segfault occurs,
-                        # the process will crash. The data validation above should prevent most segfaults.
-                        # If segfaults still occur, set skip_eval_on_segfault=True and evaluate separately.
-                except Exception as e:
-                    import warnings
-                    warnings.warn(
-                        f'Error during kitti_eval for {name}: {e}. '
-                        f'Skipping this result.', RuntimeWarning)
-                    logger.error(f'Failed to evaluate {name}: {e}')
-                except SystemError as e:
-                    # SystemError can sometimes indicate segfault-related issues
-                    import warnings
-                    warnings.warn(
-                        f'SystemError during kitti_eval for {name}: {e}. '
-                        f'This may indicate a segfault. Skipping this result.',
-                        RuntimeWarning)
-                    logger.error(f'SystemError during evaluation of {name}: {e}')
+                eval_types = ['bbox', 'bev', '3d']
+            ap_result_str, ap_dict_ = kitti_eval(
+                gt_annos, results_dict[name], classes, eval_types=eval_types)
+            for ap_type, ap in ap_dict_.items():
+                ap_dict[f'{name}/{ap_type}'] = float(f'{ap:.4f}')
+
+            print_log(f'Results of {name}:\n' + ap_result_str, logger=logger)
 
         return ap_dict
 
@@ -755,25 +346,8 @@ class KittiMetric(BaseMetric):
             info = self.data_infos[sample_idx]
             # Here default used 'CAM2' to compute metric. If you want to
             # use another camera, please modify it.
-            #
-            # Some non-KITTI datasets (e.g. SiT) use a simplified info dict
-            # without the nested ``images[CAM2]`` structure and instead store
-            # a flat ``image`` / ``calib`` dictionary. In that case, fall back
-            # to those fields so that evaluation can still proceed.
-            if 'images' in info and self.default_cam_key in info['images']:
-                image_shape = (
-                    info['images'][self.default_cam_key]['height'],
-                    info['images'][self.default_cam_key]['width'])
-            elif 'image' in info:
-                img_info = info['image']
-                img_shape = img_info.get('image_shape', np.array([0, 0]))
-                # `image_shape` is expected to be (H, W).
-                image_shape = (int(img_shape[0]), int(img_shape[1]))
-            else:
-                # As a last resort, use a dummy resolution. This should not
-                # normally happen, but avoids hard crashes on partially
-                # populated info dicts.
-                image_shape = (0, 0)
+            image_shape = (info['images'][self.default_cam_key]['height'],
+                           info['images'][self.default_cam_key]['width'])
             box_dict = self.convert_valid_bboxes(pred_dicts, info)
             anno = {
                 'name': [],
@@ -797,123 +371,24 @@ class KittiMetric(BaseMetric):
                 for box, box_lidar, bbox, score, label in zip(
                         box_preds, box_preds_lidar, box_2d_preds, scores,
                         label_preds):
-                    # Defensive checks to prevent segfaults
-                    try:
-                        # Validate bbox shape and values
-                        if bbox.shape != (4,) or not np.all(np.isfinite(bbox)):
-                            continue
-                        bbox[2:] = np.minimum(bbox[2:], image_shape[::-1])
-                        bbox[:2] = np.maximum(bbox[:2], [0, 0])
-                        
-                        # Validate label index
-                        label_int = int(label)
-                        if label_int < 0 or label_int >= len(class_names):
-                            continue
-                        anno['name'].append(class_names[label_int])
-                        anno['truncated'].append(0.0)
-                        anno['occluded'].append(0)
-                        
-                        # Validate box arrays before operations
-                        if not (np.all(np.isfinite(box)) and 
-                                np.all(np.isfinite(box_lidar))):
-                            continue
-                            
-                        if pred_box_type_3d == CameraInstance3DBoxes:
-                            if len(box) >= 7 and np.isfinite(box[0]) and np.isfinite(box[2]) and np.isfinite(box[6]):
-                                anno['alpha'].append(-np.arctan2(box[0], box[2]) +
-                                                     box[6])
-                            else:
-                                anno['alpha'].append(0.0)
-                        elif pred_box_type_3d == LiDARInstance3DBoxes:
-                            if len(box_lidar) >= 3 and len(box) >= 7 and \
-                               np.isfinite(box_lidar[0]) and np.isfinite(box_lidar[1]) and np.isfinite(box[6]):
-                                anno['alpha'].append(
-                                    -np.arctan2(-box_lidar[1], box_lidar[0]) + box[6])
-                            else:
-                                anno['alpha'].append(0.0)
-                        else:
-                            anno['alpha'].append(0.0)
-                        
-                        # Validate array lengths before slicing
-                        if len(box) >= 6:
-                            anno['bbox'].append(bbox.copy())
-                            anno['dimensions'].append(box[3:6].copy())
-                            anno['location'].append(box[:3].copy())
-                            if len(box) >= 7:
-                                anno['rotation_y'].append(float(box[6]))
-                            else:
-                                anno['rotation_y'].append(0.0)
-                        else:
-                            continue
-                            
-                        # Validate score
-                        if np.isfinite(score):
-                            anno['score'].append(float(score))
-                        else:
-                            anno['score'].append(0.0)
-                    except (ValueError, IndexError, TypeError) as e:
-                        # Skip invalid entries to prevent segfault
-                        import warnings
-                        warnings.warn(
-                            f'Skipping invalid detection at sample {sample_idx}, '
-                            f'idx {idx}: {e}', RuntimeWarning)
-                        continue
+                    bbox[2:] = np.minimum(bbox[2:], image_shape[::-1])
+                    bbox[:2] = np.maximum(bbox[:2], [0, 0])
+                    anno['name'].append(class_names[int(label)])
+                    anno['truncated'].append(0.0)
+                    anno['occluded'].append(0)
+                    if pred_box_type_3d == CameraInstance3DBoxes:
+                        anno['alpha'].append(-np.arctan2(box[0], box[2]) +
+                                             box[6])
+                    elif pred_box_type_3d == LiDARInstance3DBoxes:
+                        anno['alpha'].append(
+                            -np.arctan2(-box_lidar[1], box_lidar[0]) + box[6])
+                    anno['bbox'].append(bbox)
+                    anno['dimensions'].append(box[3:6])
+                    anno['location'].append(box[:3])
+                    anno['rotation_y'].append(box[6])
+                    anno['score'].append(score)
 
-                # Safely stack arrays, ensuring all have the same length
-                if len(anno['name']) > 0:
-                    # Verify all lists have the same length
-                    lengths = [len(v) for v in anno.values() if isinstance(v, list)]
-                    if len(set(lengths)) == 1:
-                        try:
-                            anno = {k: np.stack(v) if isinstance(v, list) else v 
-                                   for k, v in anno.items()}
-                        except (ValueError, RuntimeError) as e:
-                            # Fallback to empty arrays if stacking fails
-                            import warnings
-                            warnings.warn(
-                                f'Failed to stack arrays at sample {sample_idx}: {e}. '
-                                f'Using empty arrays.', RuntimeWarning)
-                            anno = {
-                                'name': np.array([]),
-                                'truncated': np.array([]),
-                                'occluded': np.array([]),
-                                'alpha': np.array([]),
-                                'bbox': np.zeros([0, 4]),
-                                'dimensions': np.zeros([0, 3]),
-                                'location': np.zeros([0, 3]),
-                                'rotation_y': np.array([]),
-                                'score': np.array([]),
-                            }
-                    else:
-                        # Length mismatch - use empty arrays
-                        import warnings
-                        warnings.warn(
-                            f'Length mismatch in anno dict at sample {sample_idx}. '
-                            f'Using empty arrays.', RuntimeWarning)
-                        anno = {
-                            'name': np.array([]),
-                            'truncated': np.array([]),
-                            'occluded': np.array([]),
-                            'alpha': np.array([]),
-                            'bbox': np.zeros([0, 4]),
-                            'dimensions': np.zeros([0, 3]),
-                            'location': np.zeros([0, 3]),
-                            'rotation_y': np.array([]),
-                            'score': np.array([]),
-                        }
-                else:
-                    # No valid detections, use empty arrays
-                    anno = {
-                        'name': np.array([]),
-                        'truncated': np.array([]),
-                        'occluded': np.array([]),
-                        'alpha': np.array([]),
-                        'bbox': np.zeros([0, 4]),
-                        'dimensions': np.zeros([0, 3]),
-                        'location': np.zeros([0, 3]),
-                        'rotation_y': np.array([]),
-                        'score': np.array([]),
-                    }
+                anno = {k: np.stack(v) for k, v in anno.items()}
             else:
                 anno = {
                     'name': np.array([]),
@@ -947,20 +422,8 @@ class KittiMetric(BaseMetric):
                                 anno['score'][idx]),
                             file=f)
 
-            # Safely create sample_idx array with validation
-            try:
-                score_len = len(anno['score']) if isinstance(anno['score'], np.ndarray) else 0
-                if score_len > 0:
-                    anno['sample_idx'] = np.array(
-                        [sample_idx] * score_len, dtype=np.int64)
-                else:
-                    anno['sample_idx'] = np.array([], dtype=np.int64)
-            except (TypeError, ValueError) as e:
-                import warnings
-                warnings.warn(
-                    f'Failed to create sample_idx array at sample {sample_idx}: {e}. '
-                    f'Using empty array.', RuntimeWarning)
-                anno['sample_idx'] = np.array([], dtype=np.int64)
+            anno['sample_idx'] = np.array(
+                [sample_idx] * len(anno['score']), dtype=np.int64)
 
             det_annos.append(anno)
 
@@ -969,33 +432,8 @@ class KittiMetric(BaseMetric):
                 out = f'{pklfile_prefix}.pkl'
             else:
                 out = pklfile_prefix
-            try:
-                # Validate det_annos before dumping to catch issues early
-                if not isinstance(det_annos, list):
-                    raise TypeError(f'det_annos must be a list, got {type(det_annos)}')
-                for i, anno in enumerate(det_annos):
-                    if not isinstance(anno, dict):
-                        raise TypeError(f'anno[{i}] must be a dict, got {type(anno)}')
-                    # Check that all required keys are present and valid
-                    required_keys = ['name', 'truncated', 'occluded', 'alpha', 
-                                   'bbox', 'dimensions', 'location', 'rotation_y', 
-                                   'score', 'sample_idx']
-                    for key in required_keys:
-                        if key not in anno:
-                            raise KeyError(f'Missing key "{key}" in anno[{i}]')
-                        if not isinstance(anno[key], np.ndarray):
-                            raise TypeError(
-                                f'anno[{i}]["{key}"] must be np.ndarray, '
-                                f'got {type(anno[key])}')
-                
-                mmengine.dump(det_annos, out)
-                print(f'Result is saved to {out}.')
-            except (TypeError, ValueError, KeyError) as e:
-                import warnings
-                warnings.warn(
-                    f'Failed to save pkl file {out}: {e}. '
-                    f'Continuing without saving.', RuntimeWarning)
-                # Continue execution even if saving fails
+            mmengine.dump(det_annos, out)
+            print(f'Result is saved to {out}.')
 
         return det_annos
 
@@ -1150,42 +588,17 @@ class KittiMetric(BaseMetric):
                 box3d_camera=np.zeros([0, 7]),
                 box3d_lidar=np.zeros([0, 7]),
                 scores=np.zeros([0]),
-                # Keep label_preds 1D even in the empty case so its shape
-                # matches the non-empty branch (where labels is 1D) and the
-                # later `valid_inds.sum() == 0` branch below.
-                label_preds=np.zeros([0]),
+                label_preds=np.zeros([0, 4]),
                 sample_idx=sample_idx)
         # Here default used 'CAM2' to compute metric. If you want to
         # use another camera, please modify it.
-        #
-        # Support both the standard KITTI-style ``images[CAM2]`` layout and
-        # simplified layouts used by some derived datasets (e.g. SiT) that
-        # store calibration under ``calib`` and image metadata under ``image``.
-        if 'images' in info and self.default_cam_key in info['images']:
-            cam_info = info['images'][self.default_cam_key]
-            lidar2cam = np.array(cam_info['lidar2cam']).astype(np.float32)
-            P2 = np.array(cam_info['cam2img']).astype(np.float32)
-            img_shape = (cam_info['height'], cam_info['width'])
-        elif 'calib' in info and 'image' in info:
-            calib = info['calib']
-            img_info = info['image']
-            # SiT-style placeholder calibration uses keys compatible with KITTI:
-            #   - 'Tr_velo_to_cam'  ~ lidar2cam (4x4)
-            #   - 'P2'              ~ cam2img (3x4)
-            lidar2cam = np.array(calib.get('Tr_velo_to_cam',
-                                           np.eye(4))).astype(np.float32)
-            P2 = np.array(calib.get('P2',
-                                    np.eye(3, 4))).astype(np.float32)
-            img_shape_arr = img_info.get('image_shape',
-                                         np.array([0, 0], dtype=np.int32))
-            img_shape = (int(img_shape_arr[0]), int(img_shape_arr[1]))
-        else:
-            # Fallback to identity transforms and zero image size to avoid
-            # crashing on partially populated info dicts. This will typically
-            # filter out all boxes in `valid_cam_inds`.
-            lidar2cam = np.eye(4, dtype=np.float32)
-            P2 = np.eye(3, 4, dtype=np.float32)
-            img_shape = (0, 0)
+        lidar2cam = np.array(
+            info['images'][self.default_cam_key]['lidar2cam']).astype(
+                np.float32)
+        P2 = np.array(info['images'][self.default_cam_key]['cam2img']).astype(
+            np.float32)
+        img_shape = (info['images'][self.default_cam_key]['height'],
+                     info['images'][self.default_cam_key]['width'])
         P2 = box_preds.tensor.new_tensor(P2)
 
         if isinstance(box_preds, LiDARInstance3DBoxes):
@@ -1205,35 +618,17 @@ class KittiMetric(BaseMetric):
         # Post-processing
         # check box_preds_camera
         image_shape = box_preds.tensor.new_tensor(img_shape)
-        
-        # CRITICAL FIX: Skip camera validation for LiDAR-only datasets
-        # When image_shape is (0, 0), it means there's no real camera (e.g., SiT dataset)
-        # In this case, we should only validate point cloud range, not camera bounds
-        is_lidar_only = img_shape[0] == 0 and img_shape[1] == 0
-        
-        if is_lidar_only:
-            # LiDAR-only dataset: skip camera validation, only check point cloud range
-            if isinstance(box_preds, LiDARInstance3DBoxes):
-                limit_range = box_preds.tensor.new_tensor(self.pcd_limit_range)
-                valid_pcd_inds = ((box_preds_lidar.center > limit_range[:3]) &
-                                  (box_preds_lidar.center < limit_range[3:]))
-                valid_inds = valid_pcd_inds.all(-1)
-            else:
-                # For camera boxes in LiDAR-only dataset, accept all (unlikely case)
-                valid_inds = torch.ones(len(box_preds), dtype=torch.bool, device=box_preds.device)
+        valid_cam_inds = ((box_2d_preds[:, 0] < image_shape[1]) &
+                          (box_2d_preds[:, 1] < image_shape[0]) &
+                          (box_2d_preds[:, 2] > 0) & (box_2d_preds[:, 3] > 0))
+        # check box_preds_lidar
+        if isinstance(box_preds, LiDARInstance3DBoxes):
+            limit_range = box_preds.tensor.new_tensor(self.pcd_limit_range)
+            valid_pcd_inds = ((box_preds_lidar.center > limit_range[:3]) &
+                              (box_preds_lidar.center < limit_range[3:]))
+            valid_inds = valid_cam_inds & valid_pcd_inds.all(-1)
         else:
-            # Standard KITTI evaluation: validate both camera and point cloud
-            valid_cam_inds = ((box_2d_preds[:, 0] < image_shape[1]) &
-                              (box_2d_preds[:, 1] < image_shape[0]) &
-                              (box_2d_preds[:, 2] > 0) & (box_2d_preds[:, 3] > 0))
-            # check box_preds_lidar
-            if isinstance(box_preds, LiDARInstance3DBoxes):
-                limit_range = box_preds.tensor.new_tensor(self.pcd_limit_range)
-                valid_pcd_inds = ((box_preds_lidar.center > limit_range[:3]) &
-                                  (box_preds_lidar.center < limit_range[3:]))
-                valid_inds = valid_cam_inds & valid_pcd_inds.all(-1)
-            else:
-                valid_inds = valid_cam_inds
+            valid_inds = valid_cam_inds
 
         if valid_inds.sum() > 0:
             return dict(
