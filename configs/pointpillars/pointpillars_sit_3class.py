@@ -105,6 +105,9 @@ val_pipeline = [
 ]
 
 train_dataloader = dict(
+    batch_size=8,  # Increased from 6 to better utilize 12GB VRAM
+    num_workers=4,
+    persistent_workers=True,
     dataset=dict(pipeline=train_pipeline, metainfo=metainfo))
 test_dataloader = dict(dataset=dict(pipeline=test_pipeline, metainfo=metainfo))
 # Set test_mode=False for validation to enable annotation loading for loss computation
