@@ -222,23 +222,19 @@ train_cfg = dict(by_epoch=True, max_epochs=epoch_num, val_interval=2)
 val_cfg = dict()
 test_cfg = dict()
 
-# Override val_evaluator to enable mAP computation (format_only=False)
-# Note: The base config sets format_only=True to avoid segfaults with native KITTI eval.
-# Setting it to False enables Python-based evaluation which should work with SiT data.
+# Override val_evaluator to use SitMetric with LiDAR 3D IoU evaluation
+# SitMetric uses LiDARInstance3DBoxes.overlaps() to compute 3D IoU directly
+# in LiDAR coordinate space, avoiding camera-based evaluation that causes segfaults
 val_evaluator = dict(
-    type='KittiMetric',
+    type='SitMetric',
     ann_file=data_root + 'sit_infos_val.pkl',
-    # Note: 'bbox' = 2D image bbox (requires camera), 'bev' = Bird's Eye View (works with LiDAR)
-    # We use 'bbox' here to avoid segfaults, but BEV evaluation is enabled by default for 3D predictions
-    # 3D evaluation is disabled because it requires camera coordinates (see kitti_metric.py)
-    metric='bbox',
     # CRITICAL: Set correct point cloud range for SiT (not KITTI default)
     # KITTI default is [0, -40, -3, 70.4, 40, 0.0], but SiT uses [-50, -50, -5, 50, 50, 3]
     pcd_limit_range=[-50, -50, -5, 50, 50, 3],
+    # IoU thresholds for AP calculation (COCO-style: 0.5:0.05:0.95)
+    iou_thresholds=[0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95],
     format_only=False,  # Enable mAP computation
-    skip_eval_on_segfault=True,  # Skip evaluation if segfaults occur
     # Save predictions to permanent location in work_dirs
-    # This ensures predictions are preserved even if evaluation segfaults
     # File will be saved as: work_dirs/predictions/val_results/pred_instances_3d.pkl
     pklfile_prefix='work_dirs/predictions/val_results',
     backend_args=backend_args)
@@ -252,11 +248,11 @@ default_hooks = dict(
         max_keep_ckpts=5,  # Keep the latest 5 checkpoints (saves disk space)
         save_optimizer=True,  # Also save optimizer state for resuming
         by_epoch=True,  # Save by epoch (not iteration)
-        # Note: Since we're using metric='bbox', we only evaluate 2D bbox metrics
-        # The metric key format is: '{prefix}/{name}/{kitti_eval_key}'
-        # where prefix='Kitti metric', name='pred_instances_3d', and kitti_eval_key is like 'KITTI/Overall_2D_AP11_moderate'
+        # Note: SitMetric uses LiDAR 3D IoU evaluation
+        # The metric key format is: '{prefix}/pred_instances_3d/{metric_name}'
+        # where prefix='Sit metric' and metric_name is like 'Overall_mAP' or 'mAP@0.5:0.95'
         # If this doesn't work, check the logs after first evaluation for the exact metric name
-        save_best='Kitti metric/pred_instances_3d/KITTI/Overall_2D_AP11_moderate',  # Save best based on 2D bbox mAP (moderate difficulty)
+        save_best='Sit metric/pred_instances_3d/Overall_mAP',  # Save best based on overall mAP
         rule='greater'  # Higher mAP is better
     ),
     # Add validation loss hook to compute and log validation loss

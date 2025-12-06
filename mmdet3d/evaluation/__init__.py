@@ -9,7 +9,7 @@ from .functional import (aggregate_predictions, average_precision,
                          load_lyft_predictions, lyft_eval, panoptic_seg_eval,
                          per_class_iou, rename_gt, seg_eval)
 from .metrics import (IndoorMetric, InstanceSegMetric, KittiMetric, LyftMetric,
-                      NuScenesMetric, PanopticSegMetric, SegMetric,
+                      NuScenesMetric, PanopticSegMetric, SegMetric, SitMetric,
                       WaymoMetric)
 
 __all__ = [
@@ -20,6 +20,6 @@ __all__ = [
     'get_classwise_aps', 'get_single_class_aps', 'fast_hist', 'per_class_iou',
     'get_acc', 'get_acc_cls', 'seg_eval', 'KittiMetric', 'NuScenesMetric',
     'IndoorMetric', 'LyftMetric', 'SegMetric', 'InstanceSegMetric',
-    'WaymoMetric', 'eval_class', 'do_eval', 'PanopticSegMetric',
+    'WaymoMetric', 'SitMetric', 'eval_class', 'do_eval', 'PanopticSegMetric',
     'panoptic_seg_eval'
 ]
