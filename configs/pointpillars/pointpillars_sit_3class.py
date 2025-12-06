@@ -228,9 +228,12 @@ test_cfg = dict()
 val_evaluator = dict(
     type='KittiMetric',
     ann_file=data_root + 'sit_infos_val.pkl',
+    # Note: 'bbox' = 2D image bbox (requires camera), 'bev' = Bird's Eye View (works with LiDAR)
+    # We use 'bbox' here to avoid segfaults, but BEV evaluation is enabled by default for 3D predictions
+    # 3D evaluation is disabled because it requires camera coordinates (see kitti_metric.py)
     metric='bbox',
     format_only=False,  # Enable mAP computation
-    skip_eval_on_segfault=True,  # Skip evaluation if segfaults occur (set MMDET3D_SKIP_KITTI_EVAL=1 to enable)
+    skip_eval_on_segfault=True,  # Skip evaluation if segfaults occur
     # Save predictions to permanent location in work_dirs
     # This ensures predictions are preserved even if evaluation segfaults
     # File will be saved as: work_dirs/predictions/val_results/pred_instances_3d.pkl
@@ -246,7 +249,11 @@ default_hooks = dict(
         max_keep_ckpts=5,  # Keep the latest 5 checkpoints (saves disk space)
         save_optimizer=True,  # Also save optimizer state for resuming
         by_epoch=True,  # Save by epoch (not iteration)
-        save_best='Kitti metric/pred_instances_3d/3d/overall_3d_11',  # Save best based on 3D mAP
+        # Note: Since we're using metric='bbox', we only evaluate 2D bbox metrics
+        # The metric key format is: '{prefix}/{name}/{kitti_eval_key}'
+        # where prefix='Kitti metric', name='pred_instances_3d', and kitti_eval_key is like 'KITTI/Overall_2D_AP11_moderate'
+        # If this doesn't work, check the logs after first evaluation for the exact metric name
+        save_best='Kitti metric/pred_instances_3d/KITTI/Overall_2D_AP11_moderate',  # Save best based on 2D bbox mAP (moderate difficulty)
         rule='greater'  # Higher mAP is better
     ),
     # Add validation loss hook to compute and log validation loss

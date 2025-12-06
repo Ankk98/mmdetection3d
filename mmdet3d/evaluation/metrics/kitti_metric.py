@@ -400,10 +400,19 @@ class KittiMetric(BaseMetric):
         
         ap_dict = dict()
         for name in results_dict:
-            if name == 'pred_instances' or metric == 'img_bbox':
+            # Respect the metric parameter: if metric='bbox', only evaluate bbox
+            # BEV evaluation should work for LiDAR-only datasets since it's just 2D X-Y projection
+            # 3D evaluation requires camera coordinates (see d3_box_overlap_kernel comment)
+            # and will segfault with invalid camera calibration
+            if metric == 'bbox' or name == 'pred_instances' or metric == 'img_bbox':
                 eval_types = ['bbox']
+            elif metric == 'bev':
+                # BEV evaluation should work for LiDAR-only datasets
+                eval_types = ['bev']
             else:
-                eval_types = ['bbox', 'bev', '3d']
+                # Default: evaluate bbox and bev, but skip 3d to avoid segfaults
+                # 3D evaluation requires camera coordinates which SiT doesn't have properly
+                eval_types = ['bbox', 'bev']  # Removed '3d' to prevent segfaults
             
             # Validate results_dict[name] before evaluation
             dt_annos = results_dict[name]
