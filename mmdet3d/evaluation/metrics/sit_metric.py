@@ -78,6 +78,10 @@ class SitMetric(BaseMetric):
         self.ann_file = ann_file
         self.pklfile_prefix = pklfile_prefix
         self.format_only = format_only
+        if self.format_only:
+            assert pklfile_prefix is not None, 'pklfile_prefix must be not '
+            'None when format_only is True, otherwise the result files will '
+            'be saved to a temp directory which will be cleaned up at the end.'
         self.submission_prefix = submission_prefix
         self.default_cam_key = default_cam_key
         self.iou_thresholds = iou_thresholds
@@ -613,22 +617,22 @@ class SitMetric(BaseMetric):
                                 p = np.max(precisions[recalls >= t])
                             ap += p / 11.0
 
-                metric_key = f'{self.default_prefix}/pred_instances_3d/{cls_name}/AP_{iou_thr:.2f}'
+                metric_key = f'pred_instances_3d/{cls_name}/AP_{iou_thr:.2f}'
                 ap_results[metric_key] = float(ap)
 
         # Calculate mAP (mean over classes and IoU thresholds)
         aps_by_thr = {}
         for iou_thr in self.iou_thresholds:
-            aps = [ap_results.get(f'{self.default_prefix}/pred_instances_3d/{cls}/AP_{iou_thr:.2f}', 0.0)
+            aps = [ap_results.get(f'pred_instances_3d/{cls}/AP_{iou_thr:.2f}', 0.0)
                    for cls in classes]
             mAP = np.mean(aps) if aps else 0.0
-            metric_key = f'{self.default_prefix}/pred_instances_3d/mAP_{iou_thr:.2f}'
+            metric_key = f'pred_instances_3d/mAP_{iou_thr:.2f}'
             ap_results[metric_key] = float(mAP)
             aps_by_thr[iou_thr] = mAP
 
         # Calculate overall mAP (mean over all IoU thresholds)
         overall_mAP = np.mean(list(aps_by_thr.values())) if aps_by_thr else 0.0
-        ap_results[f'{self.default_prefix}/pred_instances_3d/Overall_mAP'] = float(overall_mAP)
+        ap_results['pred_instances_3d/Overall_mAP'] = float(overall_mAP)
 
         # Note: mAP@0.5:0.95 is identical to Overall_mAP since iou_thresholds
         # already covers the range [0.5, 0.95] with step 0.05
