@@ -25,6 +25,9 @@ class SitMetric(BaseMetric):
 
     Args:
         ann_file (str): Annotation file path.
+        metric (str or List[str], optional): Metrics to be evaluated. This parameter
+            is accepted for compatibility with MMEngine's evaluator system but is
+            not used by SitMetric. Defaults to 'bbox'.
         pcd_limit_range (List[float]): The range of point cloud used to filter
             invalid predicted boxes. Defaults to [-50, -50, -5, 50, 50, 3].
         iou_thresholds (List[float]): IoU thresholds for AP calculation.
@@ -49,6 +52,7 @@ class SitMetric(BaseMetric):
 
     def __init__(self,
                  ann_file: str,
+                 metric: Union[str, List[str]] = 'bbox',
                  pcd_limit_range: List[float] = [-50, -50, -5, 50, 50, 3],
                  iou_thresholds: List[float] = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95],
                  prefix: Optional[str] = None,
