@@ -448,9 +448,19 @@ class SitMetric(BaseMetric):
             dt_anno = dt_annos[i]
 
             # Convert to LiDARInstance3DBoxes
+            # NOTE: GT bbox_3d format from sit_converter: [x, y, z, l, w, h, rotation_y]
+            # where dimensions are [l, w, h] = [size_x, size_y, size_z] in LiDAR format
+            # and rotation_y is stored as-is (should be yaw around Z-axis if already in LiDAR space)
             if len(gt_anno['location']) == 0:
                 gt_boxes = LiDARInstance3DBoxes(torch.zeros((0, 7)))
             else:
+                # DIAGNOSTICS: Log box format
+                if i == 0 and len(gt_anno['location']) > 0:
+                    logger.info(f'=== DIAGNOSTICS: GT Box Format (sample {i}) ===')
+                    logger.info(f'  Location sample: {gt_anno["location"][0]}')
+                    logger.info(f'  Dimensions sample: {gt_anno["dimensions"][0]}')
+                    logger.info(f'  Rotation_y sample: {gt_anno["rotation_y"][0]}')
+                
                 # Ensure rotation_y is at least 1D, then reshape to column vector
                 rotation_y_gt = np.atleast_1d(gt_anno['rotation_y']).reshape(-1, 1)
                 gt_boxes_tensor = torch.from_numpy(
@@ -460,10 +470,24 @@ class SitMetric(BaseMetric):
                         rotation_y_gt
                     ], axis=1).astype(np.float32))
                 gt_boxes = LiDARInstance3DBoxes(gt_boxes_tensor)
+                
+                # DIAGNOSTICS: Log converted box
+                if i == 0 and len(gt_boxes) > 0:
+                    logger.info(f'  GT box tensor sample: {gt_boxes.tensor[0]}')
+                    logger.info(f'  GT box center: {gt_boxes.center[0]}')
+                    logger.info(f'  GT box size: {gt_boxes.tensor[0, 3:6]}')
+                    logger.info(f'  GT box yaw: {gt_boxes.tensor[0, 6]}')
 
             if len(dt_anno['location']) == 0:
                 dt_boxes = LiDARInstance3DBoxes(torch.zeros((0, 7)))
             else:
+                # DIAGNOSTICS: Log prediction box format
+                if i == 0 and len(dt_anno['location']) > 0:
+                    logger.info(f'=== DIAGNOSTICS: DT Box Format (sample {i}) ===')
+                    logger.info(f'  Location sample: {dt_anno["location"][0]}')
+                    logger.info(f'  Dimensions sample: {dt_anno["dimensions"][0]}')
+                    logger.info(f'  Rotation_y sample: {dt_anno["rotation_y"][0]}')
+                
                 # Ensure rotation_y is at least 1D, then reshape to column vector
                 rotation_y_dt = np.atleast_1d(dt_anno['rotation_y']).reshape(-1, 1)
                 dt_boxes_tensor = torch.from_numpy(
@@ -473,6 +497,13 @@ class SitMetric(BaseMetric):
                         rotation_y_dt
                     ], axis=1).astype(np.float32))
                 dt_boxes = LiDARInstance3DBoxes(dt_boxes_tensor)
+                
+                # DIAGNOSTICS: Log converted box
+                if i == 0 and len(dt_boxes) > 0:
+                    logger.info(f'  DT box tensor sample: {dt_boxes.tensor[0]}')
+                    logger.info(f'  DT box center: {dt_boxes.center[0]}')
+                    logger.info(f'  DT box size: {dt_boxes.tensor[0, 3:6]}')
+                    logger.info(f'  DT box yaw: {dt_boxes.tensor[0, 6]}')
 
             # Filter by point cloud range
             if len(gt_boxes) > 0:
