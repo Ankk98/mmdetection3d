@@ -43,6 +43,15 @@ class SitMetric(BaseMetric):
             evaluation. It is useful when you want to format the result to a
             specific format and submit it to the test server.
             Defaults to False.
+        submission_prefix (str, optional): The prefix of submission data. If
+            not specified, the submission data will not be generated.
+            This parameter is accepted for compatibility with configs that
+            use KittiMetric, but is not currently used by SitMetric.
+            Defaults to None.
+        default_cam_key (str): The default camera for lidar to camera
+            conversion. This parameter is accepted for compatibility with
+            KittiMetric configs, but is not used by SitMetric since it
+            operates in LiDAR space only. Defaults to 'CAM2'.
         collect_device (str): Device name used for collecting results from
             different ranks during distributed training. Must be 'cpu' or
             'gpu'. Defaults to 'cpu'.
@@ -58,6 +67,8 @@ class SitMetric(BaseMetric):
                  prefix: Optional[str] = None,
                  pklfile_prefix: Optional[str] = None,
                  format_only: bool = False,
+                 submission_prefix: Optional[str] = None,
+                 default_cam_key: str = 'CAM2',
                  collect_device: str = 'cpu',
                  backend_args: Optional[dict] = None) -> None:
         self.default_prefix = 'Sit metric'
@@ -67,6 +78,8 @@ class SitMetric(BaseMetric):
         self.ann_file = ann_file
         self.pklfile_prefix = pklfile_prefix
         self.format_only = format_only
+        self.submission_prefix = submission_prefix
+        self.default_cam_key = default_cam_key
         self.iou_thresholds = iou_thresholds
         self.backend_args = backend_args
 
