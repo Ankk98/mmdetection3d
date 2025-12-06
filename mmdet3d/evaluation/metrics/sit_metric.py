@@ -413,6 +413,29 @@ class SitMetric(BaseMetric):
 
         dt_annos = results_dict['pred_instances_3d']
 
+        # DIAGNOSTICS: Check initial state
+        logger.info(f'=== DIAGNOSTICS: Starting evaluation ===')
+        logger.info(f'Classes: {classes}')
+        logger.info(f'Number of GT samples: {len(gt_annos)}')
+        logger.info(f'Number of DT samples: {len(dt_annos)}')
+        
+        # Check first few samples
+        if len(gt_annos) > 0:
+            sample_gt = gt_annos[0]
+            logger.info(f'Sample GT keys: {list(sample_gt.keys())}')
+            logger.info(f'Sample GT name type: {type(sample_gt.get("name", None))}')
+            if len(sample_gt.get('name', [])) > 0:
+                logger.info(f'Sample GT names (first 5): {sample_gt["name"][:5]}')
+                logger.info(f'Sample GT unique names: {np.unique(sample_gt["name"])}')
+        
+        if len(dt_annos) > 0:
+            sample_dt = dt_annos[0]
+            logger.info(f'Sample DT keys: {list(sample_dt.keys())}')
+            logger.info(f'Sample DT name type: {type(sample_dt.get("name", None))}')
+            if len(sample_dt.get('name', [])) > 0:
+                logger.info(f'Sample DT names (first 5): {sample_dt["name"][:5]}')
+                logger.info(f'Sample DT unique names: {np.unique(sample_dt["name"])}')
+
         # Calculate 3D IoU for each sample
         all_ious = []
         all_gt_labels = []
@@ -458,6 +481,16 @@ class SitMetric(BaseMetric):
                 valid_gt = ((gt_centers > limit_range[:3]) & 
                            (gt_centers < limit_range[3:])).all(dim=1)
                 
+                # DIAGNOSTICS: Check filtering
+                if i == 0:
+                    logger.info(f'=== DIAGNOSTICS: Point cloud range filtering (sample {i}) ===')
+                    logger.info(f'  PCD limit range: {self.pcd_limit_range}')
+                    logger.info(f'  GT boxes before filter: {len(gt_boxes)}')
+                    logger.info(f'  GT centers range: X=[{gt_centers[:, 0].min():.2f}, {gt_centers[:, 0].max():.2f}], '
+                              f'Y=[{gt_centers[:, 1].min():.2f}, {gt_centers[:, 1].max():.2f}], '
+                              f'Z=[{gt_centers[:, 2].min():.2f}, {gt_centers[:, 2].max():.2f}]')
+                    logger.info(f'  GT boxes after filter: {valid_gt.sum()}/{len(gt_boxes)}')
+                
                 # Ensure mask length matches original array length
                 valid_gt_np = valid_gt.numpy()
                 if len(gt_anno['name']) > 0:
@@ -472,28 +505,19 @@ class SitMetric(BaseMetric):
                 gt_labels = np.array([])
 
             if len(dt_boxes) > 0:
-                limit_range = torch.tensor(self.pcd_limit_range, dtype=torch.float32)
-                dt_centers = dt_boxes.center
-                valid_dt = ((dt_centers > limit_range[:3]) & 
-                           (dt_centers < limit_range[3:])).all(dim=1)
+                # FIX: Don't filter predictions by point cloud range - evaluate all predictions
+                # Predictions outside the valid range will be false positives if they don't match GT
+                # This allows proper evaluation even if model predicts outside expected range
+                dt_labels = dt_anno['name'] if len(dt_anno['name']) > 0 else np.array([])
+                dt_scores = dt_anno['score'] if len(dt_anno['score']) > 0 else np.array([])
                 
-                # Ensure mask length matches original array length
-                valid_dt_np = valid_dt.numpy()
-                if len(dt_anno['name']) > 0:
-                    assert len(valid_dt_np) == len(dt_anno['name']), \
-                        f"DT mask length {len(valid_dt_np)} != array length {len(dt_anno['name'])}"
-                    dt_labels = dt_anno['name'][valid_dt_np]
-                else:
-                    dt_labels = np.array([])
-                
-                if len(dt_anno['score']) > 0:
-                    assert len(valid_dt_np) == len(dt_anno['score']), \
-                        f"DT mask length {len(valid_dt_np)} != score array length {len(dt_anno['score'])}"
-                    dt_scores = dt_anno['score'][valid_dt_np]
-                else:
-                    dt_scores = np.array([])
-                
-                dt_boxes = dt_boxes[valid_dt]
+                # DIAGNOSTICS: Check prediction stats
+                if i == 0:
+                    dt_centers = dt_boxes.center
+                    logger.info(f'  DT boxes (no filtering): {len(dt_boxes)}')
+                    logger.info(f'  DT centers range: X=[{dt_centers[:, 0].min():.2f}, {dt_centers[:, 0].max():.2f}], '
+                              f'Y=[{dt_centers[:, 1].min():.2f}, {dt_centers[:, 1].max():.2f}], '
+                              f'Z=[{dt_centers[:, 2].min():.2f}, {dt_centers[:, 2].max():.2f}]')
             else:
                 dt_labels = np.array([])
                 dt_scores = np.array([])
@@ -509,6 +533,31 @@ class SitMetric(BaseMetric):
             all_gt_labels.append(gt_labels)
             all_dt_labels.append(dt_labels)
             all_dt_scores.append(dt_scores)
+            
+            # DIAGNOSTICS: Log first few samples
+            if i < 3:
+                logger.info(f'Sample {i}: GT boxes={len(gt_boxes)}, DT boxes={len(dt_boxes)}')
+                logger.info(f'  GT labels: {gt_labels[:5] if len(gt_labels) > 0 else "empty"}')
+                logger.info(f'  DT labels: {dt_labels[:5] if len(dt_labels) > 0 else "empty"}')
+                if len(gt_boxes) > 0 and len(dt_boxes) > 0:
+                    logger.info(f'  IoU matrix shape: {ious.shape}, max IoU: {ious.max():.3f}')
+
+        # DIAGNOSTICS: Summary statistics
+        total_gt = sum(len(labels) for labels in all_gt_labels)
+        total_dt = sum(len(labels) for labels in all_dt_labels)
+        logger.info(f'=== DIAGNOSTICS: After IoU calculation ===')
+        logger.info(f'Total GT boxes (after filtering): {total_gt}')
+        logger.info(f'Total DT boxes (after filtering): {total_dt}')
+        
+        if total_gt > 0:
+            all_gt_flat = np.concatenate(all_gt_labels) if all_gt_labels else np.array([])
+            unique_gt, counts_gt = np.unique(all_gt_flat, return_counts=True) if len(all_gt_flat) > 0 else (np.array([]), np.array([]))
+            logger.info(f'GT class distribution: {dict(zip(unique_gt, counts_gt)) if len(unique_gt) > 0 else "none"}')
+        
+        if total_dt > 0:
+            all_dt_flat = np.concatenate(all_dt_labels) if all_dt_labels else np.array([])
+            unique_dt, counts_dt = np.unique(all_dt_flat, return_counts=True) if len(all_dt_flat) > 0 else (np.array([]), np.array([]))
+            logger.info(f'DT class distribution: {dict(zip(unique_dt, counts_dt)) if len(unique_dt) > 0 else "none"}')
 
         # Calculate AP for each class and IoU threshold
         logger.info('Calculating AP metrics...')
@@ -529,8 +578,21 @@ class SitMetric(BaseMetric):
                     ious = all_ious[i]
 
                     # Filter by class
+                    # DIAGNOSTICS: Check class matching
+                    if i == 0 and cls_idx == 0:  # Log for first sample, first class
+                        logger.info(f'=== DIAGNOSTICS: Class matching for {cls_name} ===')
+                        logger.info(f'  GT labels type: {type(gt_labels)}, dtype: {gt_labels.dtype if hasattr(gt_labels, "dtype") else "N/A"}')
+                        logger.info(f'  DT labels type: {type(dt_labels)}, dtype: {dt_labels.dtype if hasattr(dt_labels, "dtype") else "N/A"}')
+                        logger.info(f'  cls_name type: {type(cls_name)}, value: "{cls_name}"')
+                        logger.info(f'  GT labels sample: {gt_labels[:5] if len(gt_labels) > 0 else "empty"}')
+                        logger.info(f'  DT labels sample: {dt_labels[:5] if len(dt_labels) > 0 else "empty"}')
+                    
                     gt_mask = (gt_labels == cls_name)
                     dt_mask = (dt_labels == cls_name)
+                    
+                    if i == 0 and cls_idx == 0:
+                        logger.info(f'  GT mask matches: {gt_mask.sum()}/{len(gt_labels)}')
+                        logger.info(f'  DT mask matches: {dt_mask.sum()}/{len(dt_labels)}')
 
                     if not gt_mask.any() and not dt_mask.any():
                         continue
