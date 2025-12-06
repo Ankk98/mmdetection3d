@@ -1195,17 +1195,35 @@ class KittiMetric(BaseMetric):
         # Post-processing
         # check box_preds_camera
         image_shape = box_preds.tensor.new_tensor(img_shape)
-        valid_cam_inds = ((box_2d_preds[:, 0] < image_shape[1]) &
-                          (box_2d_preds[:, 1] < image_shape[0]) &
-                          (box_2d_preds[:, 2] > 0) & (box_2d_preds[:, 3] > 0))
-        # check box_preds_lidar
-        if isinstance(box_preds, LiDARInstance3DBoxes):
-            limit_range = box_preds.tensor.new_tensor(self.pcd_limit_range)
-            valid_pcd_inds = ((box_preds_lidar.center > limit_range[:3]) &
-                              (box_preds_lidar.center < limit_range[3:]))
-            valid_inds = valid_cam_inds & valid_pcd_inds.all(-1)
+        
+        # CRITICAL FIX: Skip camera validation for LiDAR-only datasets
+        # When image_shape is (0, 0), it means there's no real camera (e.g., SiT dataset)
+        # In this case, we should only validate point cloud range, not camera bounds
+        is_lidar_only = img_shape[0] == 0 and img_shape[1] == 0
+        
+        if is_lidar_only:
+            # LiDAR-only dataset: skip camera validation, only check point cloud range
+            if isinstance(box_preds, LiDARInstance3DBoxes):
+                limit_range = box_preds.tensor.new_tensor(self.pcd_limit_range)
+                valid_pcd_inds = ((box_preds_lidar.center > limit_range[:3]) &
+                                  (box_preds_lidar.center < limit_range[3:]))
+                valid_inds = valid_pcd_inds.all(-1)
+            else:
+                # For camera boxes in LiDAR-only dataset, accept all (unlikely case)
+                valid_inds = torch.ones(len(box_preds), dtype=torch.bool, device=box_preds.device)
         else:
-            valid_inds = valid_cam_inds
+            # Standard KITTI evaluation: validate both camera and point cloud
+            valid_cam_inds = ((box_2d_preds[:, 0] < image_shape[1]) &
+                              (box_2d_preds[:, 1] < image_shape[0]) &
+                              (box_2d_preds[:, 2] > 0) & (box_2d_preds[:, 3] > 0))
+            # check box_preds_lidar
+            if isinstance(box_preds, LiDARInstance3DBoxes):
+                limit_range = box_preds.tensor.new_tensor(self.pcd_limit_range)
+                valid_pcd_inds = ((box_preds_lidar.center > limit_range[:3]) &
+                                  (box_preds_lidar.center < limit_range[3:]))
+                valid_inds = valid_cam_inds & valid_pcd_inds.all(-1)
+            else:
+                valid_inds = valid_cam_inds
 
         if valid_inds.sum() > 0:
             return dict(

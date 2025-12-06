@@ -232,6 +232,9 @@ val_evaluator = dict(
     # We use 'bbox' here to avoid segfaults, but BEV evaluation is enabled by default for 3D predictions
     # 3D evaluation is disabled because it requires camera coordinates (see kitti_metric.py)
     metric='bbox',
+    # CRITICAL: Set correct point cloud range for SiT (not KITTI default)
+    # KITTI default is [0, -40, -3, 70.4, 40, 0.0], but SiT uses [-50, -50, -5, 50, 50, 3]
+    pcd_limit_range=[-50, -50, -5, 50, 50, 3],
     format_only=False,  # Enable mAP computation
     skip_eval_on_segfault=True,  # Skip evaluation if segfaults occur
     # Save predictions to permanent location in work_dirs
