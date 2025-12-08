@@ -1,4 +1,4 @@
-ARG ROCM_TAG=rocm7.1.1_ubuntu22.04_py3.10_pytorch_2.9.1
+ARG ROCM_TAG=rocm7.1.1_ubuntu22.04_py3.10_pytorch_release_2.9.1
 
 # Base image with ROCm PyTorch
 # This image includes:
@@ -37,6 +37,11 @@ RUN apt-get update && \
 # Upgrade pip and install wheel (required for building packages)
 RUN pip install --no-cache-dir --upgrade pip wheel
 
+# Install numpy<2.0 first to avoid compatibility issues
+# Many packages (matplotlib, scikit-image, etc.) were compiled against NumPy 1.x
+# and are not compatible with NumPy 2.x
+RUN pip install --no-cache-dir "numpy<2.0"
+
 # Install mmengine (pure Python, no CUDA/ROCm dependency)
 RUN pip install --no-cache-dir mmengine
 
@@ -65,18 +70,16 @@ RUN pip install --no-cache-dir "mmdet>=3.0.0,<3.3.0"
 WORKDIR /mmdetection3d
 COPY . /mmdetection3d
 
-# Install MMDetection3D in editable mode
-# --no-build-isolation ensures setup.py can see ROCm PyTorch
-RUN pip install --no-cache-dir --no-build-isolation -e .
-
-# Install runtime dependencies
+# Install runtime dependencies BEFORE installing MMDetection3D
+# This ensures correct versions (especially numpy<2.0) are installed first
 # Note: open3d will be CPU-only (no ROCm support), which is acceptable
 # Most other packages are pure Python or don't require GPU acceleration
+# Pin numpy<2.0 to avoid compatibility issues with packages compiled against NumPy 1.x
 RUN pip install --no-cache-dir \
     lyft_dataset_sdk \
     "networkx>=2.5" \
     numba \
-    numpy \
+    "numpy<2.0" \
     nuscenes-devkit \
     open3d \
     plyfile \
@@ -84,17 +87,14 @@ RUN pip install --no-cache-dir \
     tensorboard \
     trimesh
 
+# Install MMDetection3D in editable mode
+# --no-build-isolation ensures setup.py can see ROCm PyTorch
+# Runtime dependencies are already installed above, so this will skip them
+RUN pip install --no-cache-dir --no-build-isolation -e .
+
 # Final verification: Check PyTorch ROCm support and GPU availability
-RUN python -c "import torch; \
-    print('=' * 60); \
-    print('PyTorch Version:', torch.__version__); \
-    print('HIP Version:', getattr(torch.version, 'hip', 'Not Available')); \
-    print('CUDA Available (HIP-backed):', torch.cuda.is_available()); \
-    if torch.cuda.is_available(): \
-        print('Device Count:', torch.cuda.device_count()); \
-        for i in range(torch.cuda.device_count()): \
-            print(f'  Device {i}:', torch.cuda.get_device_name(i)); \
-    print('=' * 60)"
+# Note: GPU devices won't be available during build, only at runtime
+RUN python -c "import torch; print('PyTorch:', torch.__version__); print('HIP:', getattr(torch.version, 'hip', 'N/A')); print('CUDA available:', torch.cuda.is_available())"
 
 # Set working directory
 WORKDIR /mmdetection3d
