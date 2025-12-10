@@ -173,7 +173,16 @@ class Base3DInferencer(BaseInferencer):
                     test_dataloader = cfg.get('test_dataloader', None)
 
                 if test_dataloader is not None:
-                    dataset_cfg = test_dataloader.get('dataset')
+                    # test_dataloader could be a dict, Config, or an object.
+                    # Prefer dict-style access when available; fall back to attribute.
+                    dataset_cfg = None
+                    if isinstance(test_dataloader, dict):
+                        dataset_cfg = test_dataloader.get('dataset')
+                    elif hasattr(test_dataloader, 'get'):
+                        dataset_cfg = test_dataloader.get('dataset', None)
+                    elif hasattr(test_dataloader, 'dataset'):
+                        dataset_cfg = getattr(test_dataloader, 'dataset')
+
                     if dataset_cfg is not None:
                         test_dataset_cfg = deepcopy(dataset_cfg)
                         # lazy init. We only need the metainfo.
