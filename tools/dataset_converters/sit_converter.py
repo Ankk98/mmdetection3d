@@ -28,6 +28,79 @@ except ImportError:
         HAS_LZF = False
 
 
+def get_ego_matrix(ego_traj_path: str) -> np.ndarray:
+    """Load ego-motion matrix from trajectory file.
+    
+    Args:
+        ego_traj_path (str): Path to ego trajectory file.
+        
+    Returns:
+        np.ndarray: 4x4 ego-motion matrix (world to robot transform).
+    """
+    with open(ego_traj_path, 'r') as f:
+        lines = f.readlines()
+    # Parse comma-separated values and reshape to 4x4
+    return np.array([float(i) for i in lines[0].split(",")]).reshape(4, 4)
+
+
+def rotmat_to_euler(rot_mat: np.ndarray) -> np.ndarray:
+    """Convert rotation matrix to Euler angles (X-Y-Z convention).
+    
+    Args:
+        rot_mat (np.ndarray): 3x3 rotation matrix.
+        
+    Returns:
+        np.ndarray: [roll, pitch, yaw] in radians.
+    """
+    sy = np.sqrt(rot_mat[0, 0] * rot_mat[0, 0] + rot_mat[1, 0] * rot_mat[1, 0])
+    singular = sy < 1e-6
+    
+    if not singular:
+        roll = np.arctan2(rot_mat[2, 1], rot_mat[2, 2])
+        pitch = np.arctan2(-rot_mat[2, 0], sy)
+        yaw = np.arctan2(rot_mat[1, 0], rot_mat[0, 0])
+    else:
+        roll = np.arctan2(-rot_mat[1, 2], rot_mat[1, 1])
+        pitch = np.arctan2(-rot_mat[2, 0], sy)
+        yaw = 0
+        
+    return np.array([roll, pitch, yaw])
+
+
+def transform_boxes_world_to_lidar(gt_boxes: np.ndarray, ego_motion: np.ndarray) -> np.ndarray:
+    """Transform bounding boxes from world to LiDAR coordinates.
+    
+    Args:
+        gt_boxes (np.ndarray): Nx7 array [x, y, z, l, w, h, yaw] in world frame.
+        ego_motion (np.ndarray): 4x4 ego-motion matrix.
+        
+    Returns:
+        np.ndarray: Nx7 array [x, y, z, l, w, h, yaw] in LiDAR frame.
+    """
+    # Extract ego yaw angle
+    ego_yaw = rotmat_to_euler(ego_motion[:3, :3])[2]
+    
+    # Transform orientations
+    gt_boxes[:, 6] -= ego_yaw
+    
+    # Transform positions using inverse ego-motion
+    centers_world = gt_boxes[:, :3]
+    # Convert to homogeneous coordinates
+    centers_world_homog = np.concatenate(
+        [centers_world, np.ones((centers_world.shape[0], 1))], 
+        axis=1
+    )
+    # Apply inverse transformation
+    centers_lidar_homog = np.matmul(
+        np.linalg.inv(ego_motion), 
+        centers_world_homog.T
+    ).T
+    # Extract 3D coordinates
+    gt_boxes[:, :3] = centers_lidar_homog[:, :3]
+    
+    return gt_boxes
+
+
 def load_pcd_file(pcd_path: str) -> np.ndarray:
     """Load PCD file and return points as numpy array.
 
@@ -117,13 +190,17 @@ def parse_sit_label_line(line: str) -> Dict:
 
 
 def convert_label_3d_to_kitti(sit_label_path: str, kitti_label_path: str,
-                             calib_data: Optional[Dict] = None) -> bool:
-    """Convert SiT 3D labels to KITTI format.
+                             calib_data: Optional[Dict] = None,
+                             ego_traj_path: Optional[str] = None,
+                             apply_ego_transform: bool = True) -> bool:
+    """Convert SiT 3D labels to KITTI format with ego-motion transformation.
 
     Args:
         sit_label_path (str): Path to SiT label file.
         kitti_label_path (str): Path to output KITTI label file.
         calib_data (dict, optional): Calibration data for coordinate transformations.
+        ego_traj_path (str, optional): Path to ego trajectory file for world-to-LiDAR transformation.
+        apply_ego_transform (bool): Whether to apply ego-motion transformation. Default: True.
 
     Returns:
         bool: True if conversion successful.
@@ -132,53 +209,99 @@ def convert_label_3d_to_kitti(sit_label_path: str, kitti_label_path: str,
         with open(sit_label_path, 'r') as f:
             lines = f.readlines()
 
-        kitti_labels = []
+        if not lines:
+            # Create empty file
+            with open(kitti_label_path, 'w') as f:
+                pass
+            return True
 
+        # Map SiT classes to KITTI classes
+        class_mapping = {
+            'Pedestrian': 'Pedestrian',
+            'Pedestrain_sitting': 'Pedestrian',  # Map to Pedestrian (typo in original dataset)
+            'Car': 'Car',
+            # Vehicle classes mapped to Car
+            'Truck': 'Car',
+            'Bus': 'Car',
+            # Person-on-vehicle classes mapped to Pedestrian
+            'Cyclist': 'Pedestrian',
+            'Motorcyclist': 'Pedestrian',
+        }
+
+        # Parse all labels first (in world coordinates)
+        parsed_labels = []
         for line in lines:
             if line.strip():
-                label_data = parse_sit_label_line(line)
-
-                # Map SiT classes to KITTI classes
-                class_mapping = {
-                    'Pedestrian': 'Pedestrian',
-                    'Pedestrain_sitting': 'Pedestrian',  # Map to Pedestrian (typo in original dataset)
-                    'Car': 'Car',
-                    # Vehicle classes mapped to Car
-                    'Truck': 'Car',
-                    'Bus': 'Car',
-                    # Person-on-vehicle classes mapped to Pedestrian
-                    'Cyclist': 'Pedestrian',
-                    'Motorcyclist': 'Pedestrian',
-                }
-
-                kitti_class = class_mapping.get(label_data['class_name'])
-                if kitti_class is None:
-                    print(f"Warning: Unknown class {label_data['class_name']}, skipping")
+                try:
+                    label_data = parse_sit_label_line(line)
+                    kitti_class = class_mapping.get(label_data['class_name'])
+                    if kitti_class is None:
+                        print(f"Warning: Unknown class {label_data['class_name']}, skipping")
+                        continue
+                    
+                    # Store with mapped class
+                    label_data['kitti_class'] = kitti_class
+                    parsed_labels.append(label_data)
+                except Exception as e:
+                    print(f"Warning: Failed to parse label line: {line.strip()}, error: {e}")
                     continue
 
-                # KITTI format: type truncated occluded alpha bbox_2d[4] dims[3] loc[3] rot_y score
-                # For now, set defaults for fields we can't compute without calibration
-                truncated = 0.0  # Not truncated
-                occluded = 0     # Fully visible
-                alpha = 0.0      # Observation angle (would need camera calibration)
-                bbox_2d = [0, 0, 0, 0]  # 2D bbox (would need projection)
-                score = 1.0      # Ground truth
+        if not parsed_labels:
+            # No valid labels, create empty file
+            with open(kitti_label_path, 'w') as f:
+                pass
+            return True
 
-                # Dimensions: KITTI uses h, w, l format
-                h, w, l = label_data['dimensions']
+        # Collect all boxes in [x, y, z, l, w, h, yaw] format
+        gt_boxes = []
+        for label in parsed_labels:
+            h, w, l = label['dimensions']
+            x, y, z = label['location']
+            yaw = label['rotation_y']
+            gt_boxes.append([x, y, z, l, w, h, yaw])
+        
+        gt_boxes = np.array(gt_boxes, dtype=np.float32)
 
-                # Location: x, y, z in camera coordinates (would need transformation)
-                x, y, z = label_data['location']
+        # Apply ego-motion transformation if requested and trajectory file provided
+        if apply_ego_transform and ego_traj_path is not None:
+            if osp.exists(ego_traj_path):
+                try:
+                    # Load ego-motion matrix
+                    ego_motion = get_ego_matrix(ego_traj_path)
+                    
+                    # Transform boxes from world to LiDAR frame
+                    gt_boxes = transform_boxes_world_to_lidar(gt_boxes, ego_motion)
+                except Exception as e:
+                    print(f"Warning: Failed to apply ego-motion transformation: {e}")
+                    print(f"Ego trajectory file: {ego_traj_path}")
+            else:
+                print(f"Warning: Ego trajectory file not found: {ego_traj_path}")
+                print("Labels will remain in world coordinates (this will cause zero mAP!)")
 
-                # Rotation
-                rot_y = label_data['rotation_y']
+        # Write KITTI labels with transformed coordinates
+        kitti_labels = []
+        for i, label in enumerate(parsed_labels):
+            # Get transformed box
+            x, y, z, l, w, h, yaw = gt_boxes[i]
+            
+            # KITTI format: type truncated occluded alpha bbox_2d[4] dims[3] loc[3] rot_y score
+            truncated = 0.0  # Not truncated
+            occluded = 0     # Fully visible
+            alpha = 0.0      # Observation angle (would need camera calibration)
+            bbox_2d = [0, 0, 0, 0]  # 2D bbox (would need projection)
+            score = 1.0      # Ground truth
 
-                # Create KITTI label line
-                kitti_line = f"{kitti_class} {truncated} {occluded} {alpha} " \
-                           f"{bbox_2d[0]} {bbox_2d[1]} {bbox_2d[2]} {bbox_2d[3]} " \
-                           f"{h} {w} {l} {x} {y} {z} {rot_y} {score}\n"
+            # Dimensions: KITTI uses h, w, l format
+            h_out = h
+            w_out = w
+            l_out = l
 
-                kitti_labels.append(kitti_line)
+            # Create KITTI label line with transformed coordinates
+            kitti_line = f"{label['kitti_class']} {truncated} {occluded} {alpha} " \
+                       f"{bbox_2d[0]} {bbox_2d[1]} {bbox_2d[2]} {bbox_2d[3]} " \
+                       f"{h_out} {w_out} {l_out} {x} {y} {z} {yaw} {score}\n"
+
+            kitti_labels.append(kitti_line)
 
         # Write KITTI labels
         with open(kitti_label_path, 'w') as f:
@@ -188,6 +311,8 @@ def convert_label_3d_to_kitti(sit_label_path: str, kitti_label_path: str,
 
     except Exception as e:
         print(f"Error converting {sit_label_path} to {kitti_label_path}: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -822,13 +947,16 @@ def convert_sequence(sit_root: str, output_root: str, sequence: str, start_frame
             print(f"  Failed to convert PCD: {pcd_file}")
             continue
 
-        # Convert labels
+        # Convert labels with ego-motion transformation
         original_frame_idx = pcd_file.split('.')[0]  # Original frame ID from sequence
         label_path = osp.join(sit_seq_dir, 'label_3d', f'{original_frame_idx}.txt')
+        ego_traj_path = osp.join(sit_seq_dir, 'ego_trajectory', f'{original_frame_idx}.txt')
         kitti_label_path = osp.join(output_training_dir, 'label_2', f'{frame_idx_str}.txt')
 
         if osp.exists(label_path):
-            if convert_label_3d_to_kitti(label_path, kitti_label_path):
+            if convert_label_3d_to_kitti(label_path, kitti_label_path, 
+                                        ego_traj_path=ego_traj_path, 
+                                        apply_ego_transform=True):
                 print(f"  Converted labels: {original_frame_idx}.txt -> {frame_idx_str}.txt")
             else:
                 print(f"  Failed to convert labels: {original_frame_idx}.txt")
