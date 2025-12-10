@@ -541,7 +541,7 @@ class SitMetric(BaseMetric):
                     logger.info(f'  GT boxes after filter: {valid_gt.sum()}/{len(gt_boxes)}')
                 
                 # Ensure mask length matches original array length
-                valid_gt_np = valid_gt.numpy()
+                valid_gt_np = valid_gt.cpu().numpy()
                 if len(gt_anno['name']) > 0:
                     assert len(valid_gt_np) == len(gt_anno['name']), \
                         f"GT mask length {len(valid_gt_np)} != array length {len(gt_anno['name'])}"
@@ -574,7 +574,7 @@ class SitMetric(BaseMetric):
             # Calculate 3D IoU
             if len(gt_boxes) > 0 and len(dt_boxes) > 0:
                 ious = LiDARInstance3DBoxes.overlaps(dt_boxes, gt_boxes, mode='iou')
-                ious = ious.numpy()
+                ious = ious.cpu().numpy()
             else:
                 ious = np.zeros((len(dt_boxes), len(gt_boxes)))
 

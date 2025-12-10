@@ -330,6 +330,14 @@ def create_groundtruth_database(dataset_class_name,
         # Ensure gt_boxes_3d is a NumPy array (handles BaseInstance3DBoxes, tensors, etc.)
         gt_boxes_3d = _to_numpy(annos['gt_bboxes_3d'])
         gt_labels_3d = _to_numpy(annos['gt_labels_3d']).astype(np.int64)
+
+        num_classes = len(dataset.metainfo['classes'])
+        if (gt_labels_3d < 0).any() or (gt_labels_3d >= num_classes).any():
+            bad = gt_labels_3d[(gt_labels_3d < 0) | (gt_labels_3d >= num_classes)]
+            raise ValueError(
+                f"Found invalid gt_labels_3d indices: {bad.tolist()} "
+                f"(valid range 0..{num_classes-1})")
+
         names = [dataset.metainfo['classes'][i] for i in gt_labels_3d]
         group_dict = dict()
         if 'group_ids' in annos:
@@ -505,6 +513,14 @@ class GTDatabaseCreater:
         # Ensure gt_boxes_3d is a NumPy array (handles BaseInstance3DBoxes, tensors, etc.)
         gt_boxes_3d = _to_numpy(annos['gt_bboxes_3d'])
         gt_labels_3d = _to_numpy(annos['gt_labels_3d']).astype(np.int64)
+
+        num_classes = len(self.dataset.metainfo['classes'])
+        if (gt_labels_3d < 0).any() or (gt_labels_3d >= num_classes).any():
+            bad = gt_labels_3d[(gt_labels_3d < 0) | (gt_labels_3d >= num_classes)]
+            raise ValueError(
+                f"Found invalid gt_labels_3d indices: {bad.tolist()} "
+                f"(valid range 0..{num_classes-1})")
+
         names = [
             self.dataset.metainfo['classes'][i] for i in gt_labels_3d
         ]
