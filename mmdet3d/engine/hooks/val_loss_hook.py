@@ -106,12 +106,17 @@ class ValLossHook(Hook):
                             loss_dict[key] = value
                     self.val_losses.append(loss_dict)
                 elif isinstance(losses, list) and len(losses) > 0:
-                    # If losses is a list, convert to dict
-                    total_loss = sum(losses) if all(
-                        isinstance(l, torch.Tensor) for l in losses) else losses[0]
-                    if isinstance(total_loss, torch.Tensor):
-                        self.val_losses.append({'loss': total_loss.detach().cpu().item()})
-                    else:
+                    # If losses is a list, aggregate any mix of tensors and scalars
+                    total_loss = 0.0
+                    valid_items = 0
+                    for item in losses:
+                        if isinstance(item, torch.Tensor):
+                            total_loss += item.detach().cpu().item()
+                            valid_items += 1
+                        elif isinstance(item, (float, int)):
+                            total_loss += float(item)
+                            valid_items += 1
+                    if valid_items > 0:
                         self.val_losses.append({'loss': total_loss})
         except Exception as e:
             # If loss computation fails, skip this batch
