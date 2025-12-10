@@ -264,9 +264,9 @@ class SitMetric(BaseMetric):
                     scores_3d = np.array(scores_3d)
 
                 if torch.is_tensor(labels_3d):
-                    labels_3d = labels_3d.numpy()
+                    labels_3d = labels_3d.cpu().numpy().astype(np.int64)
                 else:
-                    labels_3d = np.array(labels_3d)
+                    labels_3d = np.array(labels_3d, dtype=np.int64)
 
                 # Create mask for valid labels (simplified approach)
                 valid_mask = np.array([0 <= label < len(classes) for label in labels_3d])
