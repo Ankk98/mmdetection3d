@@ -174,7 +174,15 @@ class Det3DDataset(BaseDataset):
         for key in ann_info.keys():
             if key == 'instances':
                 # Filter instances list to match arrays
-                # This ensures consistency between arrays and list
+                # Add length validation to prevent silent truncation by zip
+                if len(ann_info[key]) != len(filter_mask):
+                    raise ValueError(
+                        f"Length mismatch in _remove_dontcare: "
+                        f"instances list has {len(ann_info[key])} items, "
+                        f"but filter_mask has {len(filter_mask)} items. "
+                        f"This indicates a data inconsistency that must be fixed."
+                    )
+                # Use list comprehension with zip (safe now that we validated lengths)
                 img_filtered_annotations[key] = [
                     inst for inst, keep in zip(ann_info[key], filter_mask) if keep
                 ]
