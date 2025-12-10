@@ -87,8 +87,12 @@ class ValLossHook(Hook):
                 return
 
         # Compute loss
+        was_training = model.training
         try:
-            # Keep model in eval mode for validation
+            # Keep model in eval mode for validation.
+            # Remember the original mode so we can restore it after computing the loss.
+            model.eval()
+
             # Enable gradients temporarily for loss computation (some losses need it)
             # but we won't backpropagate
             with torch.enable_grad():
@@ -125,6 +129,10 @@ class ValLossHook(Hook):
                 logger='current',
                 level=logging.WARNING)
             return
+        finally:
+            # Restore original training/eval state to avoid side effects
+            if was_training:
+                model.train()
 
     def after_val_epoch(self, runner: Runner, metrics: Dict = None) -> None:
         """Log average validation loss after validation epoch.
