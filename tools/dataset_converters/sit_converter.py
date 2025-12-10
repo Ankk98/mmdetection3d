@@ -278,6 +278,29 @@ def convert_label_3d_to_kitti(sit_label_path: str, kitti_label_path: str,
                 print(f"Warning: Ego trajectory file not found: {ego_traj_path}")
                 print("Labels will remain in world coordinates (this will cause zero mAP!)")
 
+        # ------------------------------------------------------------------ #
+        # Normalize yaw to [-pi, pi] and filter boxes to point cloud range
+        # consistent with training/eval config.
+        # ------------------------------------------------------------------ #
+        pcd_limit_range = np.array([-50, -50, -5, 50, 50, 3], dtype=np.float32)
+
+        # Wrap yaw
+        gt_boxes[:, 6] = (gt_boxes[:, 6] + np.pi) % (2 * np.pi) - np.pi
+
+        # Filter by center range
+        centers = gt_boxes[:, :3]
+        in_range = ((centers > pcd_limit_range[:3])
+                    & (centers < pcd_limit_range[3:])).all(axis=1)
+
+        gt_boxes = gt_boxes[in_range]
+        parsed_labels = [lbl for lbl, keep in zip(parsed_labels, in_range) if keep]
+
+        if len(gt_boxes) == 0:
+            # No valid boxes after filtering; write empty label file
+            with open(kitti_label_path, 'w') as f:
+                pass
+            return True
+
         # Write KITTI labels with transformed coordinates
         kitti_labels = []
         for i, label in enumerate(parsed_labels):

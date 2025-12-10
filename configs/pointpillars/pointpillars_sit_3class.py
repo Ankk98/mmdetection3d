@@ -21,7 +21,8 @@ db_sampler = dict(
         filter_by_difficulty=[-1],
         filter_by_min_points=dict(Pedestrian=5, Car=3)),
     classes=class_names,
-    sample_groups=dict(Pedestrian=15, Car=30),
+    # Oversample Car 4x relative to Pedestrian to counter class imbalance
+    sample_groups=dict(Pedestrian=15, Car=60),
     points_loader=dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
@@ -141,6 +142,13 @@ model = dict(
         output_shape=[632, 632]),
     bbox_head=dict(
         num_classes=2,  # Pedestrian, Car
+        loss_cls=dict(
+            type='mmdet.FocalLoss',
+            use_sigmoid=True,
+            gamma=2.0,
+            # Weight Car higher (index 1) to offset class imbalance
+            class_weight=[1.0, 4.0],
+            loss_weight=1.0),
         anchor_generator=dict(
             ranges=[
                 [-50, -50, -0.6, 50, 50, -0.6],  # Pedestrian range
@@ -174,7 +182,7 @@ model = dict(
 
 # In practice PointPillars also uses a different schedule
 # optimizer
-lr = 0.001
+lr = 0.0001
 epoch_num = 80
 optim_wrapper = dict(
     optimizer=dict(lr=lr), clip_grad=dict(max_norm=35, norm_type=2))
