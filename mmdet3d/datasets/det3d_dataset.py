@@ -187,6 +187,13 @@ class Det3DDataset(BaseDataset):
                     inst for inst, keep in zip(ann_info[key], filter_mask) if keep
                 ]
             elif isinstance(ann_info[key], np.ndarray):
+                # Validate length consistency for numpy arrays
+                if ann_info[key].shape[0] != len(filter_mask):
+                    raise ValueError(
+                        f"Length mismatch in _remove_dontcare for key '{key}': "
+                        f"array length {ann_info[key].shape[0]} vs mask length {len(filter_mask)}. "
+                        f"This indicates a data inconsistency that must be fixed."
+                    )
                 # Filter numpy arrays using mask
                 img_filtered_annotations[key] = ann_info[key][filter_mask]
             else:
