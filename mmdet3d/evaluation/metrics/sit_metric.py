@@ -252,14 +252,14 @@ class SitMetric(BaseMetric):
 
                 # Convert to numpy arrays if needed
                 if isinstance(bboxes_3d, LiDARInstance3DBoxes):
-                    bboxes_3d = bboxes_3d.tensor.numpy()
+                    bboxes_3d = bboxes_3d.tensor.detach().cpu().numpy()
                 elif torch.is_tensor(bboxes_3d):
-                    bboxes_3d = bboxes_3d.numpy()
+                    bboxes_3d = bboxes_3d.detach().cpu().numpy()
                 else:
                     bboxes_3d = np.array(bboxes_3d)
 
                 if torch.is_tensor(scores_3d):
-                    scores_3d = scores_3d.numpy()
+                    scores_3d = scores_3d.detach().cpu().numpy()
                 else:
                     scores_3d = np.array(scores_3d)
 
