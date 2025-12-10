@@ -62,8 +62,8 @@ class SitMetric(BaseMetric):
     def __init__(self,
                  ann_file: str,
                  metric: Union[str, List[str]] = 'bbox',
-                 pcd_limit_range: List[float] = [-50, -50, -5, 50, 50, 3],
-                 iou_thresholds: List[float] = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95],
+                 pcd_limit_range: Optional[List[float]] = None,
+                 iou_thresholds: Optional[List[float]] = None,
                  prefix: Optional[str] = None,
                  pklfile_prefix: Optional[str] = None,
                  format_only: bool = False,
@@ -74,6 +74,11 @@ class SitMetric(BaseMetric):
         self.default_prefix = 'Sit metric'
         super(SitMetric, self).__init__(
             collect_device=collect_device, prefix=prefix)
+        if pcd_limit_range is None:
+            pcd_limit_range = [-50, -50, -5, 50, 50, 3]
+        if iou_thresholds is None:
+            iou_thresholds = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+
         self.pcd_limit_range = pcd_limit_range
         self.ann_file = ann_file
         self.pklfile_prefix = pklfile_prefix
@@ -97,7 +102,9 @@ class SitMetric(BaseMetric):
         Returns:
             List[dict]: List of KITTI-style annotations.
         """
-        data_annos = data_infos['data_list']
+        data_annos = data_infos.get('data_list', [])
+        if len(data_annos) == 0:
+            return []
         if not self.format_only:
             cat2label = data_infos['metainfo']['categories']
             label2cat = dict((v, k) for (k, v) in cat2label.items())
