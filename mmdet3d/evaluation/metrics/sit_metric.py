@@ -166,7 +166,13 @@ class SitMetric(BaseMetric):
             result = dict()
             pred_3d = data_sample['pred_instances_3d']
             for attr_name in pred_3d:
-                pred_3d[attr_name] = pred_3d[attr_name].to('cpu')
+                attr_value = pred_3d[attr_name]
+                if hasattr(attr_value, 'to') and callable(attr_value.to):
+                    pred_3d[attr_name] = attr_value.to('cpu')
+                elif torch.is_tensor(attr_value):
+                    pred_3d[attr_name] = attr_value.cpu()
+                else:
+                    pred_3d[attr_name] = attr_value
             result['pred_instances_3d'] = pred_3d
             sample_idx = data_sample['sample_idx']
             result['sample_idx'] = sample_idx
