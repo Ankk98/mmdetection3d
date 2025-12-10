@@ -146,8 +146,9 @@ model = dict(
             type='mmdet.FocalLoss',
             use_sigmoid=True,
             gamma=2.0,
-            # Bias toward Car (class 1) via alpha vector
-            alpha=[0.25, 0.75],
+            # Single alpha scalar (mmcv focal_loss expects float, not list)
+            # Bias toward positives; tune if needed (e.g., 0.75)
+            alpha=0.75,
             loss_weight=1.0),
         anchor_generator=dict(
             ranges=[

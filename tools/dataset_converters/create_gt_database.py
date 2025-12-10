@@ -329,7 +329,8 @@ def create_groundtruth_database(dataset_class_name,
                 f'Available keys: {list(example.keys())}')
         # Ensure gt_boxes_3d is a NumPy array (handles BaseInstance3DBoxes, tensors, etc.)
         gt_boxes_3d = _to_numpy(annos['gt_bboxes_3d'])
-        names = [dataset.metainfo['classes'][i] for i in annos['gt_labels_3d']]
+        gt_labels_3d = _to_numpy(annos['gt_labels_3d']).astype(np.int64)
+        names = [dataset.metainfo['classes'][i] for i in gt_labels_3d]
         group_dict = dict()
         if 'group_ids' in annos:
             group_ids = annos['group_ids']
@@ -503,8 +504,9 @@ class GTDatabaseCreater:
                 f'Available keys: {list(example.keys())}')
         # Ensure gt_boxes_3d is a NumPy array (handles BaseInstance3DBoxes, tensors, etc.)
         gt_boxes_3d = _to_numpy(annos['gt_bboxes_3d'])
+        gt_labels_3d = _to_numpy(annos['gt_labels_3d']).astype(np.int64)
         names = [
-            self.dataset.metainfo['classes'][i] for i in annos['gt_labels_3d']
+            self.dataset.metainfo['classes'][i] for i in gt_labels_3d
         ]
         group_dict = dict()
         if 'group_ids' in annos:
