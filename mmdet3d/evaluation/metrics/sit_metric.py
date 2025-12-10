@@ -184,12 +184,17 @@ class SitMetric(BaseMetric):
                 includes the file path and the prefix of filename, e.g.,
                 "a/b/prefix". If not specified, a temp file will be created.
                 Defaults to None.
-            classes (List[str], optional): Name of classes. Defaults to None.
+            classes (List[str], optional): Name of classes. If None, will use
+                self.dataset_meta['classes']. Defaults to None.
 
         Returns:
             Tuple[dict, Optional[tempfile.TemporaryDirectory]]: Formatted results
                 and temporary directory.
         """
+        # Use dataset_meta classes if not provided
+        if classes is None:
+            classes = self.dataset_meta['classes']
+        
         if pklfile_prefix is None:
             tmp_dir = tempfile.TemporaryDirectory()
             pklfile_prefix = osp.join(tmp_dir.name, 'results')
