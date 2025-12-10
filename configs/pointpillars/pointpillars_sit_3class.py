@@ -109,15 +109,45 @@ train_dataloader = dict(
     batch_size=8,  # Increased from 6 to better utilize 12GB VRAM
     num_workers=4,
     persistent_workers=True,
-    dataset=dict(pipeline=train_pipeline, metainfo=metainfo))
-test_dataloader = dict(dataset=dict(pipeline=test_pipeline, metainfo=metainfo))
+    dataset=dict(
+        type='SiTDataset',
+        data_root=data_root,
+        ann_file='sit_infos_train.pkl',
+        data_prefix=dict(pts='training/velodyne'),
+        pipeline=train_pipeline,
+        modality=input_modality,
+        test_mode=False,
+        metainfo=metainfo,
+        box_type_3d='LiDAR',
+        backend_args=backend_args))
+
+test_dataloader = dict(
+    dataset=dict(
+        type='SiTDataset',
+        data_root=data_root,
+        ann_file='sit_infos_test.pkl',
+        data_prefix=dict(pts='training/velodyne'),
+        pipeline=test_pipeline,
+        modality=input_modality,
+        test_mode=True,
+        metainfo=metainfo,
+        box_type_3d='LiDAR',
+        backend_args=backend_args))
+
 # Set test_mode=False for validation to enable annotation loading for loss computation
 # Evaluation will still work correctly as the evaluator uses the annotation file directly
 val_dataloader = dict(
     dataset=dict(
+        type='SiTDataset',
+        data_root=data_root,
+        ann_file='sit_infos_val.pkl',
+        data_prefix=dict(pts='training/velodyne'),
         pipeline=val_pipeline,
+        modality=input_modality,
+        test_mode=False,  # load ann_info
         metainfo=metainfo,
-        test_mode=False))  # Set to False to load ann_info for loss computation
+        box_type_3d='LiDAR',
+        backend_args=backend_args))
 
 # Model settings for SiT dataset
 # Calculate output shape based on point cloud range and voxel size
