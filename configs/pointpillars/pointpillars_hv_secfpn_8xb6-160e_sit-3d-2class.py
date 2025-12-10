@@ -77,9 +77,55 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    dataset=dict(pipeline=train_pipeline, metainfo=metainfo))
-test_dataloader = dict(dataset=dict(pipeline=test_pipeline, metainfo=metainfo))
-val_dataloader = dict(dataset=dict(pipeline=test_pipeline, metainfo=metainfo))
+    batch_size=6,
+    num_workers=4,
+    persistent_workers=True,
+    sampler=dict(type='DefaultSampler', shuffle=True),
+    dataset=dict(
+        type='SiTDataset',
+        data_root=data_root,
+        ann_file='sit_infos_train.pkl',
+        data_prefix=dict(pts='training/velodyne'),
+        pipeline=train_pipeline,
+        modality=input_modality,
+        test_mode=False,
+        metainfo=metainfo,
+        box_type_3d='LiDAR',
+        backend_args=backend_args))
+test_dataloader = dict(
+    batch_size=1,
+    num_workers=1,
+    persistent_workers=True,
+    drop_last=False,
+    sampler=dict(type='DefaultSampler', shuffle=False),
+    dataset=dict(
+        type='SiTDataset',
+        data_root=data_root,
+        data_prefix=dict(pts='training/velodyne'),
+        ann_file='sit_infos_test.pkl',
+        pipeline=test_pipeline,
+        modality=input_modality,
+        test_mode=True,
+        metainfo=metainfo,
+        box_type_3d='LiDAR',
+        backend_args=backend_args))
+val_dataloader = dict(
+    batch_size=1,
+    num_workers=1,
+    persistent_workers=True,
+    drop_last=False,
+    sampler=dict(type='DefaultSampler', shuffle=False),
+    dataset=dict(
+        type='SiTDataset',
+        data_root=data_root,
+        data_prefix=dict(pts='training/velodyne'),
+        ann_file='sit_infos_val.pkl',
+        pipeline=test_pipeline,
+        modality=input_modality,
+        test_mode=True,
+        metainfo=metainfo,
+        box_type_3d='LiDAR',
+        backend_args=backend_args))
 
 # Model settings for SiT dataset
 model = dict(

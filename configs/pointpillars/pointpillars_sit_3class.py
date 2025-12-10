@@ -109,6 +109,7 @@ train_dataloader = dict(
     batch_size=8,  # Increased from 6 to better utilize 12GB VRAM
     num_workers=4,
     persistent_workers=True,
+    sampler=dict(type='DefaultSampler', shuffle=True),
     dataset=dict(
         type='SiTDataset',
         data_root=data_root,
@@ -122,6 +123,11 @@ train_dataloader = dict(
         backend_args=backend_args))
 
 test_dataloader = dict(
+    batch_size=1,
+    num_workers=1,
+    persistent_workers=True,
+    drop_last=False,
+    sampler=dict(type='DefaultSampler', shuffle=False),
     dataset=dict(
         type='SiTDataset',
         data_root=data_root,
@@ -137,6 +143,11 @@ test_dataloader = dict(
 # Set test_mode=False for validation to enable annotation loading for loss computation
 # Evaluation will still work correctly as the evaluator uses the annotation file directly
 val_dataloader = dict(
+    batch_size=1,
+    num_workers=1,
+    persistent_workers=True,
+    drop_last=False,
+    sampler=dict(type='DefaultSampler', shuffle=False),
     dataset=dict(
         type='SiTDataset',
         data_root=data_root,
