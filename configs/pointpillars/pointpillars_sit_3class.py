@@ -19,9 +19,9 @@ db_sampler = dict(
     rate=1.0,
     prepare=dict(
         filter_by_difficulty=[-1],
-        filter_by_min_points=dict(Pedestrian=5, Car=5)),
+        filter_by_min_points=dict(Pedestrian=5, Car=3)),
     classes=class_names,
-    sample_groups=dict(Pedestrian=15, Car=15),
+    sample_groups=dict(Pedestrian=15, Car=30),
     points_loader=dict(
         type='LoadPointsFromFile',
         coord_type='LIDAR',
@@ -148,7 +148,7 @@ model = dict(
             ],
             sizes=[
                 [0.8, 0.6, 1.73],  # Pedestrian (adjusted for SiT)
-                [1.76, 0.6, 1.73], # Car (adjusted for SiT)
+                [4.5, 2.03, 1.74],  # Car (width, length, height from SiT stats)
             ],
         ),
     ),
