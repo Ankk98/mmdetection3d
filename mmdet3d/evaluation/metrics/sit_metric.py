@@ -161,8 +161,25 @@ class SitMetric(BaseMetric):
                         kitti_annos['dimensions'].append(bbox_3d[3:6])
                         kitti_annos['rotation_y'].append(bbox_3d[6])
                         kitti_annos['score'].append(instance.get('score', 1.0))
-                    for name in kitti_annos:
-                        kitti_annos[name] = np.array(kitti_annos[name])
+                    
+                    # Check if all instances were filtered out
+                    if len(kitti_annos['name']) == 0:
+                        # All instances filtered out - initialize with correct shapes
+                        kitti_annos = {
+                            'name': np.array([]),
+                            'truncated': np.array([]),
+                            'occluded': np.array([]),
+                            'alpha': np.array([]),
+                            'bbox': np.zeros([0, 4]),
+                            'dimensions': np.zeros([0, 3]),
+                            'location': np.zeros([0, 3]),
+                            'rotation_y': np.array([]),
+                            'score': np.array([]),
+                        }
+                    else:
+                        # Convert lists to numpy arrays
+                        for name in kitti_annos:
+                            kitti_annos[name] = np.array(kitti_annos[name])
                 data_annos[i]['kitti_annos'] = kitti_annos
         return data_annos
 
