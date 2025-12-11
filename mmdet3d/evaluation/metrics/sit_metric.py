@@ -135,7 +135,14 @@ class SitMetric(BaseMetric):
                         'score': []
                     }
                     for instance in annos['instances']:
-                        label = instance['bbox_label']
+                        # Use .get to avoid KeyError if bbox_label is missing
+                        label = instance.get('bbox_label', None)
+                        if label is None:
+                            print_log(
+                                'Instance missing bbox_label; skipping instance.',
+                                logger='current',
+                                level='WARNING')
+                            continue
                         if label not in label2cat:
                             continue
                         kitti_annos['name'].append(label2cat[label])
