@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   mmdet3d-rocm:
     build:
@@ -34,12 +32,12 @@ services:
       - .:/workspace/mmdetection3d:rw
       # Mount data directory (adjust path if data is stored elsewhere)
       - ./data:/workspace/mmdetection3d/data:rw
+      # Mount raw data directory
+      - ./raw_data/:/workspace/mmdetection3d/raw_data/:ro
       # Mount checkpoints directory
       - ./checkpoints:/workspace/mmdetection3d/checkpoints:rw
       # Mount work_dirs for training outputs
       - ./work_dirs:/workspace/mmdetection3d/work_dirs:rw
-      # Optional: Mount finetuning_results if you want to preserve them
-      - ./finetuning_results:/workspace/mmdetection3d/finetuning_results:rw
       # X11 socket for GUI forwarding (optional)
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
     working_dir: /workspace/mmdetection3d

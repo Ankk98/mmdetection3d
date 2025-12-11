@@ -29,6 +29,13 @@ RUN apt-get update && \
     ninja-build \
     libglib2.0-0 \
     libxrender-dev \
+    # Mesa EGL/OpenGL libraries for headless rendering (required by Open3D WebRTC)
+    libegl1-mesa \
+    libgl1-mesa-glx \
+    libgles2-mesa \
+    # Xvfb (X Virtual Framebuffer) for headless GUI applications
+    # Use with: xvfb-run -a python ... --web ...
+    xvfb \
     # Additional build dependencies for compiling mmcv from source
     build-essential \
     cmake \

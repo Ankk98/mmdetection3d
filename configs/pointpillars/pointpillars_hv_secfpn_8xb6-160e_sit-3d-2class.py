@@ -10,6 +10,13 @@ data_root = 'data/sit/'
 class_names = ['Pedestrian', 'Car']
 metainfo = dict(classes=class_names)
 backend_args = None
+# Input modality: LiDAR only for SiT
+input_modality = dict(
+    use_lidar=True,
+    use_camera=False,
+    use_radar=False,
+    use_map=False,
+    use_external=False)
 
 # PointPillars adopted a different sampling strategies among classes
 db_sampler = dict(
