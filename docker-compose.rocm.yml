@@ -19,6 +19,12 @@ services:
       - FORCE_CUDA=1
       - ROCM_HOME=/opt/rocm
       - HIP_PLATFORM=amd
+      # Prefer Vulkan backend for wgpu/fastplotlib on AMD
+      - WGPU_BACKEND=vulkan
+      # Runtime dir for Vulkan/DRM (created at container start if missing)
+      - XDG_RUNTIME_DIR=/tmp/runtime-drm
+      # Default Jupyter port (change when launching if needed)
+      - JUPYTER_PORT=8889
       # Python path for MMDetection3D
       - PYTHONPATH=/workspace/mmdetection3d:${PYTHONPATH:-}
       # X11 forwarding for GUI applications (optional)
@@ -30,10 +36,13 @@ services:
     volumes:
       # Mount the entire project directory
       - .:/workspace/mmdetection3d:rw
+      # Host firmware so Mesa/RADV sees RDNA GPUs inside container
+      - /lib/firmware:/lib/firmware:ro
       # Mount data directory (adjust path if data is stored elsewhere)
-      - ./data:/workspace/mmdetection3d/data:rw
-      # Mount raw data directory
-      - ./raw_data/:/workspace/mmdetection3d/raw_data/:ro
+      - "/run/media/ankk98/Ankk98 SSD Part 31/mmdet3d/data:/workspace/mmdetection3d/data:rw"
+      # Mount external SiT raw dataset from external drive
+      # Update the path below to match your actual dataset location
+      - "/run/media/ankk98/Ankk98 SSD Part 31/datasets/sit/raw:/workspace/mmdetection3d/raw_data/sit/:ro"
       # Mount checkpoints directory
       - ./checkpoints:/workspace/mmdetection3d/checkpoints:rw
       # Mount work_dirs for training outputs
@@ -42,12 +51,14 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
     working_dir: /workspace/mmdetection3d
     shm_size: 8g
+    tmpfs:
+      - /tmp/runtime-drm:uid=0,gid=0,mode=0700
     # Port mappings
     # Port 8888: Open3D WebRTC server (for browser-based 3D visualization)
     # Ports 8889-8892: Reserved for future use
     ports:
       - "8888:8888"   # Open3D WebRTC visualization server
-      - "8889:8889"   # Reserved for future use
+      - "8889:8889"   # Jupyter notebook server
       - "8890:8890"   # Reserved for future use
       - "8891:8891"   # Reserved for future use
       - "8892:8892"   # Reserved for future use

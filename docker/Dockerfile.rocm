@@ -1,11 +1,37 @@
+# syntax=docker/dockerfile:1.4
 ARG ROCM_TAG=rocm7.1.1_ubuntu22.04_py3.10_pytorch_release_2.9.1
 
-# Base image with ROCm PyTorch
-# This image includes:
-# - ROCm 7.1.1 stack
-# - PyTorch 2.9.1 with ROCm/HIP backend
-# - Python 3.10
-# - Ubuntu 22.04
+######################################################################
+# Stage 1: build mmcv wheel once (cached) to avoid recompiling each build
+######################################################################
+FROM rocm/pytorch:${ROCM_TAG} AS mmcv-builder
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    ROCM_HOME=/opt/rocm \
+    PATH=$PATH:/opt/rocm/bin:/opt/rocm/hip/bin \
+    HIP_PLATFORM=amd \
+    FORCE_CUDA=1
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    git \
+    ninja-build \
+    build-essential \
+    cmake \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir --upgrade pip wheel
+RUN pip install --no-cache-dir "numpy<2.0" mmengine
+
+# Build and cache mmcv wheel; this layer is reused unless mmcv version changes
+RUN pip wheel --no-cache-dir --no-build-isolation \
+    "git+https://github.com/open-mmlab/mmcv.git@v2.1.0" \
+    -w /tmp/wheels
+
+######################################################################
+# Stage 2: main runtime image
+######################################################################
 FROM rocm/pytorch:${ROCM_TAG}
 
 # Environment variables for ROCm detection and build
@@ -29,10 +55,13 @@ RUN apt-get update && \
     ninja-build \
     libglib2.0-0 \
     libxrender-dev \
-    # Mesa EGL/OpenGL libraries for headless rendering (required by Open3D WebRTC)
+    # Mesa EGL/OpenGL + Vulkan drivers for headless/GPU rendering (fastplotlib/wgpu)
     libegl1-mesa \
     libgl1-mesa-glx \
     libgles2-mesa \
+    mesa-vulkan-drivers \
+    vulkan-tools \
+    mesa-utils \
     # Xvfb (X Virtual Framebuffer) for headless GUI applications
     # Use with: xvfb-run -a python ... --web ...
     xvfb \
@@ -57,13 +86,9 @@ RUN pip install --no-cache-dir "numpy<2.0"
 # Install mmengine (pure Python, no CUDA/ROCm dependency)
 RUN pip install --no-cache-dir mmengine
 
-# Build mmcv from source with ROCm/HIP support
-# This is the critical step that was missing in the previous Dockerfile
-# --no-build-isolation allows mmcv's setup.py to detect the ROCm PyTorch
-# that's already installed in the base image
-# mmcv will automatically detect ROCm via torch.version.hip and ROCM_HOME
-RUN pip install --no-cache-dir --no-build-isolation \
-    "git+https://github.com/open-mmlab/mmcv.git@v2.1.0"
+# Install mmcv from cached wheel built in the mmcv-builder stage
+COPY --from=mmcv-builder /tmp/wheels /tmp/wheels
+RUN pip install --no-cache-dir --no-deps /tmp/wheels/mmcv-*.whl
 
 # Verify mmcv was built with ROCm support
 # This will show HIP compiler info if successful, or NVCC if it failed
@@ -95,6 +120,14 @@ RUN pip install --no-cache-dir \
     "numpy<2.0" \
     nuscenes-devkit \
     open3d \
+    jupyterlab \
+    notebook \
+    ipykernel \
+    # WebGPU/Vulkan stack for interactive visualization
+    "fastplotlib>=0.1.0" \
+    "pygfx>=0.3.0" \
+    "wgpu>=0.16.0" \
+    "ipywidgets>=8.0.0" \
     plyfile \
     scikit-image \
     tensorboard \
