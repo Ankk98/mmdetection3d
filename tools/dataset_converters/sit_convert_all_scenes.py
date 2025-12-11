@@ -178,19 +178,23 @@ def main():
         sys.path.insert(0, project_root)
     from tools.dataset_converters.sit_converter import create_imagesets, create_sit_infos, create_sit_database
     
-    # Get all sequences (for ImageSets creation)
-    all_sequences = []
+    # Get all successfully converted sequences (for ImageSets creation)
+    # Only include sequences that have both velo data AND labels (were actually converted)
+    all_converted_sequences = []
     for scene_type in available_scenes:
         scene_dir = Path(args.sit_root) / scene_type
         for item in scene_dir.iterdir():
             if item.is_dir():
+                # Check both velo data AND labels exist (only converted sequences will have both)
                 velo_dir = item / 'velo' / 'concat' / 'data'
-                if velo_dir.exists() and list(velo_dir.glob('*.pcd')):
-                    all_sequences.append(item.name)
+                label_dir = item / 'label_3d'
+                if (velo_dir.exists() and list(velo_dir.glob('*.pcd')) and
+                    label_dir.exists()):
+                    all_converted_sequences.append(item.name)
     
-    if all_sequences:
-        create_imagesets(args.output_root, all_sequences, tuple(args.split_ratio))
-        print(f"Created ImageSets with {len(all_sequences)} sequences")
+    if all_converted_sequences:
+        create_imagesets(args.output_root, all_converted_sequences, tuple(args.split_ratio))
+        print(f"Created ImageSets with {len(all_converted_sequences)} sequences")
         
         if args.create_info:
             create_sit_infos(

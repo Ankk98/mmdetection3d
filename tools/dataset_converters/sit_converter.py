@@ -950,6 +950,13 @@ def convert_sequence(sit_root: str, output_root: str, sequence: str, start_frame
         print(f"Warning: No PCD files found in {velo_dir}")
         return False, start_frame_idx
 
+    # Check if label_3d directory exists - if not, discard the entire sequence
+    label_3d_dir = osp.join(sit_seq_dir, 'label_3d')
+    if not osp.exists(label_3d_dir):
+        print(f"Warning: label_3d directory not found: {label_3d_dir}")
+        print(f"Discarding sequence {sequence} - no labels available")
+        return False, start_frame_idx
+
     success_count = 0
     total_count = len(pcd_files)
     current_frame_idx = start_frame_idx

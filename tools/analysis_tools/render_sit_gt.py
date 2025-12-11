@@ -280,7 +280,7 @@ def render_sample(data_root: str, infos: str, idx: int, block: bool = False) -> 
             gt_boxes.append(inst["bbox_3d"])
     gt_boxes = np.asarray(gt_boxes, dtype=np.float32) if gt_boxes else np.zeros((0, 7), np.float32)
 
-    print(f"Found {len(gt_boxes)} GT boxes for sample {args.idx}")
+    print(f"Found {len(gt_boxes)} GT boxes for sample {idx}")
 
     render_with_threejs(
         pts,

@@ -20,40 +20,43 @@ from collections import defaultdict
 def count_raw_sequences(raw_root):
     """Count sequences in raw data by scene type."""
     scene_counts = defaultdict(list)
-    
+
     raw_path = Path(raw_root)
     if not raw_path.exists():
         print(f"Error: Raw data root does not exist: {raw_root}")
         return {}
-    
+
     # Expected scene types
     scene_types = [
-        'Cafe_street', 'Cafeteria', 'Corridor', 'Courtyard', 
-        'Crossroad', 'Hallway', 'Lobby', 'Outdoor_Alley', 
+        'Cafe_street', 'Cafeteria', 'Corridor', 'Courtyard',
+        'Crossroad', 'Hallway', 'Lobby', 'Outdoor_Alley',
         'Subway_Entrance', 'Three_way_Intersection'
     ]
-    
+
     for scene_type in scene_types:
         scene_dir = raw_path / scene_type
         if not scene_dir.exists():
             continue
-        
+
         # Find all sequences (subdirectories with velo/concat/data)
         sequences = []
         for item in scene_dir.iterdir():
             if item.is_dir():
                 velo_dir = item / 'velo' / 'concat' / 'data'
+                label_dir = item / 'label_3d'
                 if velo_dir.exists():
                     pcd_files = list(velo_dir.glob('*.pcd'))
                     if pcd_files:
+                        has_labels = label_dir.exists()
                         sequences.append({
                             'name': item.name,
-                            'frame_count': len(pcd_files)
+                            'frame_count': len(pcd_files),
+                            'has_labels': has_labels
                         })
-        
+
         if sequences:
             scene_counts[scene_type] = sequences
-    
+
     return scene_counts
 
 def count_converted_frames(converted_root):
@@ -136,51 +139,86 @@ Examples:
     total_sequences = 0
     total_expected_frames = 0
     
+    labeled_sequences = 0
+    labeled_frames = 0
+    unlabeled_sequences = 0
+    unlabeled_frames = 0
+
     for scene_type, sequences in sorted(scene_counts.items()):
         seq_count = len(sequences)
         frame_count = sum(s['frame_count'] for s in sequences)
         total_sequences += seq_count
         total_expected_frames += frame_count
-        
+
+        # Count labeled vs unlabeled
+        labeled_seqs = [s for s in sequences if s['has_labels']]
+        unlabeled_seqs = [s for s in sequences if not s['has_labels']]
+
+        labeled_seq_count = len(labeled_seqs)
+        labeled_frame_count = sum(s['frame_count'] for s in labeled_seqs)
+        unlabeled_seq_count = len(unlabeled_seqs)
+        unlabeled_frame_count = sum(s['frame_count'] for s in unlabeled_seqs)
+
+        labeled_sequences += labeled_seq_count
+        labeled_frames += labeled_frame_count
+        unlabeled_sequences += unlabeled_seq_count
+        unlabeled_frames += unlabeled_frame_count
+
         print(f"   {scene_type:25s}: {seq_count:3d} sequences, {frame_count:5d} frames")
-        # Show first few sequence names
+        if labeled_seq_count > 0:
+            print(f"     Labeled:   {labeled_seq_count:3d} sequences, {labeled_frame_count:5d} frames")
+        if unlabeled_seq_count > 0:
+            print(f"     Unlabeled: {unlabeled_seq_count:3d} sequences, {unlabeled_frame_count:5d} frames")
+
+        # Show first few sequence names with label status
         if seq_count <= 5:
-            seq_names = [s['name'] for s in sequences]
-            print(f"     Sequences: {', '.join(seq_names)}")
+            seq_info = []
+            for s in sequences:
+                status = "✓" if s['has_labels'] else "✗"
+                seq_info.append(f"{s['name']}{status}")
+            print(f"     Sequences: {', '.join(seq_info)}")
         else:
-            seq_names = [s['name'] for s in sequences[:3]]
-            print(f"     Sequences: {', '.join(seq_names)} ... ({seq_count - 3} more)")
-    
+            seq_info = []
+            for s in sequences[:3]:
+                status = "✓" if s['has_labels'] else "✗"
+                seq_info.append(f"{s['name']}{status}")
+            print(f"     Sequences: {', '.join(seq_info)} ... ({seq_count - 3} more)")
+
     print()
     print(f"   Total: {total_sequences} sequences, {total_expected_frames} expected frames")
+    print(f"   Labeled:   {labeled_sequences} sequences, {labeled_frames} frames (will be converted)")
+    print(f"   Unlabeled: {unlabeled_sequences} sequences, {unlabeled_frames} frames (will be skipped)")
     print()
     
     # Count converted frames
     print("2. Checking converted data...")
     converted_frames = count_converted_frames(converted_root)
-    
+
     if converted_frames == 0:
         print("   ERROR: No converted frames found!")
         return
-    
+
     print(f"   Converted frames: {converted_frames}")
     print()
-    
-    # Compare
+
+    # Compare against only labeled frames (since unlabeled sequences are skipped)
     print("3. Comparison:")
-    print(f"   Expected frames (from raw data): {total_expected_frames}")
-    print(f"   Converted frames:                 {converted_frames}")
-    
-    if converted_frames == total_expected_frames:
-        print("   ✅ PERFECT MATCH! All frames were converted.")
-    elif converted_frames > total_expected_frames:
-        print(f"   ⚠️  WARNING: More converted frames ({converted_frames}) than expected ({total_expected_frames})")
+    print(f"   Expected frames (all raw data):     {total_expected_frames}")
+    print(f"   Expected frames (labeled only):     {labeled_frames}")
+    print(f"   Converted frames:                   {converted_frames}")
+
+    if converted_frames == labeled_frames:
+        print("   ✅ PERFECT MATCH! All labeled frames were converted.")
+        if unlabeled_sequences > 0:
+            print(f"   ℹ️  {unlabeled_sequences} unlabeled sequences ({unlabeled_frames} frames) were correctly skipped.")
+    elif converted_frames > labeled_frames:
+        print(f"   ⚠️  WARNING: More converted frames ({converted_frames}) than expected ({labeled_frames})")
         print("      This might indicate duplicate conversions or frame ID conflicts.")
     else:
-        missing = total_expected_frames - converted_frames
-        percentage = (converted_frames / total_expected_frames) * 100
-        print(f"   ⚠️  WARNING: Missing {missing} frames ({100 - percentage:.1f}%)")
-        print(f"      Only {percentage:.1f}% of expected frames were converted.")
+        missing = labeled_frames - converted_frames
+        percentage = (converted_frames / labeled_frames) * 100 if labeled_frames > 0 else 0
+        print(f"   ⚠️  WARNING: Missing {missing} frames ({100 - percentage:.1f}%) from labeled sequences")
+        print(f"      Only {percentage:.1f}% of labeled frames were converted.")
     
     print()
     print("4. Scene type coverage:")
@@ -212,18 +250,22 @@ Examples:
     print("Recommendation:")
     print("=" * 80)
     
-    if converted_frames == total_expected_frames:
-        print("✅ Your dataset appears to include data from all scene types!")
-        print("   All expected frames were successfully converted.")
-    elif converted_frames >= total_expected_frames * 0.95:
-        print("✅ Your dataset likely includes data from all scene types.")
+    if converted_frames == labeled_frames:
+        print("✅ All labeled sequences were successfully converted!")
+        if unlabeled_sequences > 0:
+            print(f"   ℹ️  {unlabeled_sequences} unlabeled sequences were correctly skipped.")
+        print("   Your dataset is ready for training.")
+    elif converted_frames >= labeled_frames * 0.95:
+        print("✅ Most labeled sequences were converted.")
         print("   Minor differences might be due to empty/invalid frames being skipped.")
+        if unlabeled_sequences > 0:
+            print(f"   ℹ️  {unlabeled_sequences} unlabeled sequences were correctly skipped.")
     else:
-        print("⚠️  Your dataset might be missing data from some scene types.")
-        print("   Consider re-running the conversion for missing scenes.")
+        print("⚠️  Some labeled sequences may not have been converted.")
+        print("   Check conversion logs for errors or re-run the conversion.")
         print()
-        print("   To check which scenes were converted, look for conversion logs")
-        print("   that show 'Converting sequence: <sequence_name>' messages.")
+        print("   Look for logs showing 'Converting sequence: <sequence_name>' messages")
+        print("   and check for any sequences that show 'Discarding sequence' messages.")
     
     print()
 

@@ -1,4 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+import logging
 import tempfile
 from os import path as osp
 from typing import Dict, List, Optional, Sequence, Tuple, Union
@@ -141,7 +142,7 @@ class SitMetric(BaseMetric):
                             print_log(
                                 'Instance missing bbox_label; skipping instance.',
                                 logger='current',
-                                level='WARNING')
+                                level=logging.WARNING)
                             continue
                         if label not in label2cat:
                             continue
