@@ -540,8 +540,10 @@ class SitMetric(BaseMetric):
                               f'Z=[{gt_centers[:, 2].min():.2f}, {gt_centers[:, 2].max():.2f}]')
                     logger.info(f'  GT boxes after filter: {valid_gt.sum()}/{len(gt_boxes)}')
                 
-                # Ensure mask length matches original array length
-                valid_gt_np = valid_gt.cpu().numpy()
+                # Ensure mask length matches original array length.
+                # Torch -> numpy may yield int/uint dtypes; force boolean to avoid
+                # fancy indexing being interpreted as positional indices.
+                valid_gt_np = valid_gt.cpu().numpy().astype(bool, copy=False)
                 if len(gt_anno['name']) > 0:
                     assert len(valid_gt_np) == len(gt_anno['name']), \
                         f"GT mask length {len(valid_gt_np)} != array length {len(gt_anno['name'])}"
