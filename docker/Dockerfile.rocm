@@ -14,7 +14,8 @@ ENV PYTHONUNBUFFERED=1 \
     ROCM_HOME=/opt/rocm \
     PATH=$PATH:/opt/rocm/bin:/opt/rocm/hip/bin \
     HIP_PLATFORM=amd \
-    FORCE_CUDA=1
+    FORCE_CUDA=1 \
+    PYTHONPATH=/mmdetection3d:$PYTHONPATH
 
 # Install system dependencies required by MMDetection3D
 # Includes build tools needed for compiling mmcv from source
@@ -31,6 +32,8 @@ RUN apt-get update && \
     # Additional build dependencies for compiling mmcv from source
     build-essential \
     cmake \
+    # Screen for session management
+    screen \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -67,6 +70,7 @@ RUN python -c "import mmcv; \
 RUN pip install --no-cache-dir "mmdet>=3.0.0,<3.3.0"
 
 # Copy MMDetection3D source into container
+# Note: At runtime, docker-compose mounts to /workspace/mmdetection3d
 WORKDIR /mmdetection3d
 COPY . /mmdetection3d
 
@@ -85,7 +89,8 @@ RUN pip install --no-cache-dir \
     plyfile \
     scikit-image \
     tensorboard \
-    trimesh
+    trimesh \
+    gdown
 
 # Install MMDetection3D in editable mode
 # --no-build-isolation ensures setup.py can see ROCm PyTorch
@@ -96,9 +101,15 @@ RUN pip install --no-cache-dir --no-build-isolation -e .
 # Note: GPU devices won't be available during build, only at runtime
 RUN python -c "import torch; print('PyTorch:', torch.__version__); print('HIP:', getattr(torch.version, 'hip', 'N/A')); print('CUDA available:', torch.cuda.is_available())"
 
+# Copy and set up entrypoint script
+COPY docker/docker-entrypoint-rocm.sh /usr/local/bin/docker-entrypoint-rocm.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint-rocm.sh
+
 # Set working directory
+# Note: docker-compose will override this to /workspace/mmdetection3d at runtime
 WORKDIR /mmdetection3d
 
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint-rocm.sh"]
 CMD ["/bin/bash"]
 
 # Runtime notes:
@@ -123,4 +134,13 @@ CMD ["/bin/bash"]
 #     --ipc=host \
 #     mmdet3d-rocm \
 #     python tools/check_rocm_gpu.py
+#
+# To verify environment setup:
+#   docker run --rm \
+#     --device=/dev/kfd \
+#     --device=/dev/dri \
+#     --group-add video \
+#     --ipc=host \
+#     mmdet3d-rocm \
+#     python tools/verify_rocm_env.py
 

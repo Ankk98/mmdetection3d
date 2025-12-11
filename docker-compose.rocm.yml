@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  mmdet3d-rocm:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.rocm
+    image: mmdet3d-rocm:latest
+    container_name: mmdet3d-rocm
+    # ROCm device access
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    # Add video group for GPU access
+    group_add:
+      - video
+    # Shared memory for IPC (needed for ROCm)
+    ipc: host
+    environment:
+      - PYTHONUNBUFFERED=1
+      - FORCE_CUDA=1
+      - ROCM_HOME=/opt/rocm
+      - HIP_PLATFORM=amd
+      # Python path for MMDetection3D
+      - PYTHONPATH=/workspace/mmdetection3d:${PYTHONPATH:-}
+      # X11 forwarding for GUI applications (optional)
+      - DISPLAY=${DISPLAY:-:0}
+      # Open3D WebRTC server port
+      - O3D_WEBRTC_PORT=8888
+      # Set SKIP_VERIFY=1 to skip automatic environment verification on startup
+      - SKIP_VERIFY=${SKIP_VERIFY:-}
+    volumes:
+      # Mount the entire project directory
+      - .:/workspace/mmdetection3d:rw
+      # Mount data directory (adjust path if data is stored elsewhere)
+      - ./data:/workspace/mmdetection3d/data:rw
+      # Mount checkpoints directory
+      - ./checkpoints:/workspace/mmdetection3d/checkpoints:rw
+      # Mount work_dirs for training outputs
+      - ./work_dirs:/workspace/mmdetection3d/work_dirs:rw
+      # Optional: Mount finetuning_results if you want to preserve them
+      - ./finetuning_results:/workspace/mmdetection3d/finetuning_results:rw
+      # X11 socket for GUI forwarding (optional)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    working_dir: /workspace/mmdetection3d
+    shm_size: 8g
+    # Port mappings
+    # Port 8888: Open3D WebRTC server (for browser-based 3D visualization)
+    # Ports 8889-8892: Reserved for future use
+    ports:
+      - "8888:8888"   # Open3D WebRTC visualization server
+      - "8889:8889"   # Reserved for future use
+      - "8890:8890"   # Reserved for future use
+      - "8891:8891"   # Reserved for future use
+      - "8892:8892"   # Reserved for future use
+    # Keep container running for interactive use
+    stdin_open: true
+    tty: true
+    # Restart policy (optional)
+    restart: unless-stopped
+    # Default command (can be overridden)
+    # Entrypoint will run verification script automatically before starting bash
+    # Set SKIP_VERIFY=1 environment variable to skip verification
+    command: /bin/bash
