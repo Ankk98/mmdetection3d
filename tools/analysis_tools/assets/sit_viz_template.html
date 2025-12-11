@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>__TITLE__</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+            z-index: 100;
+        }
+        #legend {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+            z-index: 100;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 5px;
+        }
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            margin-right: 10px;
+            border: 1px solid white;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="info">
+        <div><strong>__TITLE__</strong></div>
+        <div>Controls: Left-click drag to rotate, Middle-click drag to pan, Scroll to zoom</div>
+        <div>(Hold Ctrl + Left-click to Pan)</div>
+        <div>Press 'C' to toggle Fly Mode (WASD + Mouse to fly)</div>
+        <div>Press 'R' to reset view to center (0,0,0)</div>
+    </div>
+    <div id="legend">
+        <!-- Legend items will be injected here -->
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/controls/FlyControls.js"></script>
+    <script>
+        // Data injected by Python script
+        const pointsData = __POINTS_DATA__;
+        const boxesData = __BOXES_DATA__;
+        const center = __CENTER__;
+        const cameraDistance = __CAMERA_DISTANCE__;
+
+        // Visualization logic
+        __VISUALIZATION_LOGIC__
+    </script>
+</body>
+</html>

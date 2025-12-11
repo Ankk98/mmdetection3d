@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Use a SiT fine-tuned 3D object detection model to predict cuboids and render with fastplotlib.
+Use a SiT fine-tuned 3D object detection model to predict cuboids and render with Three.js.
 
 This script loads a SiT fine-tuned model, runs inference on SiT point clouds,
-and visualizes the predictions with the point cloud using a fastplotlib 3D view.
+and visualizes the predictions with the point cloud using Three.js in browser.
 
 Usage:
     python tools/analysis_tools/render_sit_finetuned_model.py \
@@ -16,15 +16,21 @@ Usage:
 """
 
 import argparse
+import json
+import os
+import webbrowser
 from pathlib import Path
+from typing import Dict, Tuple, Optional
 
 import mmengine
 import numpy as np
 import torch
-from fastplotlib import Figure
-
 from mmdet3d.apis import inference_detector, init_model
 
+# Import shared visualization helpers from render_sit_gt
+import sys
+sys.path.append(str(Path(__file__).parent))
+from render_sit_gt import render_with_threejs, load_points
 
 # Torch 2.6 defaults torch.load(weights_only=True). Force weights_only=False so
 # older checkpoints load without UnpicklingError.
@@ -38,91 +44,6 @@ def _torch_load_weights_only_false(*args, **kwargs):
 
 
 torch.load = _torch_load_weights_only_false
-
-
-def resolve_checkpoint_path(path: str) -> str:
-    """Resolve MMDet-style last_checkpoint files to actual .pth path."""
-    p = Path(path)
-    if p.is_file() and p.suffix not in {'.pth', '.ckpt'}:
-        try:
-            content = p.read_text().strip().splitlines()
-            if content:
-                resolved = Path(content[0]).expanduser()
-                if not resolved.is_absolute():
-                    resolved = (p.parent / resolved).resolve()
-                return str(resolved)
-        except Exception:
-            pass
-    return path
-
-
-def load_points(bin_path: Path) -> np.ndarray:
-    """Load point cloud from binary file."""
-    pts = np.fromfile(bin_path, dtype=np.float32).reshape(-1, 4)
-    return pts[:, :3]
-
-
-def _yaw_to_rot(yaw: np.ndarray) -> np.ndarray:
-    c, s = np.cos(yaw), np.sin(yaw)
-    return np.stack(
-        [
-            np.stack([c, -s, np.zeros_like(c)], axis=-1),
-            np.stack([s, c, np.zeros_like(c)], axis=-1),
-            np.stack([np.zeros_like(c), np.zeros_like(c), np.ones_like(c)], axis=-1),
-        ],
-        axis=-2,
-    )
-
-
-_EDGE_IDX = np.array(
-    [
-        [0, 1],
-        [1, 2],
-        [2, 3],
-        [3, 0],
-        [4, 5],
-        [5, 6],
-        [6, 7],
-        [7, 4],
-        [0, 4],
-        [1, 5],
-        [2, 6],
-        [3, 7],
-    ],
-    dtype=np.int64,
-)
-
-
-def boxes_to_lines(boxes: np.ndarray) -> np.ndarray:
-    if boxes.size == 0:
-        return np.empty((0, 2, 3), dtype=np.float32)
-
-    centers = boxes[:, 0:3]
-    dims = np.abs(boxes[:, 3:6])
-    yaw = ((boxes[:, 6] + np.pi) % (2 * np.pi)) - np.pi
-
-    base = np.array(
-        [
-            [1, 1, 1],
-            [1, -1, 1],
-            [-1, -1, 1],
-            [-1, 1, 1],
-            [1, 1, -1],
-            [1, -1, -1],
-            [-1, -1, -1],
-            [-1, 1, -1],
-        ],
-        dtype=np.float32,
-    )
-
-    half_dims = dims / 2.0
-    corners = base[None, :, :] * half_dims[:, None, :]
-    R = _yaw_to_rot(yaw)
-    rotated = corners @ np.transpose(R, (0, 2, 1))
-    translated = rotated + centers[:, None, :]
-
-    lines = translated[:, _EDGE_IDX, :]
-    return lines.reshape(-1, 2, 3).astype(np.float32)
 
 
 def extract_pred_boxes(result, score_thr: float = 0.3):
@@ -157,9 +78,25 @@ def extract_pred_boxes(result, score_thr: float = 0.3):
     return boxes, scores
 
 
+def resolve_checkpoint_path(path: str) -> str:
+    """Resolve MMDet-style last_checkpoint files to actual .pth path."""
+    p = Path(path)
+    if p.is_file() and p.suffix not in {'.pth', '.ckpt'}:
+        try:
+            content = p.read_text().strip().splitlines()
+            if content:
+                resolved = Path(content[0]).expanduser()
+                if not resolved.is_absolute():
+                    resolved = (p.parent / resolved).resolve()
+                return str(resolved)
+        except Exception:
+            pass
+    return path
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='Use SiT fine-tuned model to predict and render cuboids with fastplotlib')
+        description='Use SiT fine-tuned model to predict and render cuboids with Three.js')
     parser.add_argument(
         '--data-root',
         type=str,
@@ -244,36 +181,31 @@ def main():
         print(f"Score range: [{pred_scores.min():.3f}, {pred_scores.max():.3f}]")
         print(f"Example box: {pred_boxes[0]}")
 
-    gt_boxes = []
+    # Build scene data for Three.js
+    boxes_param = {}
+    
+    # 1. Predictions (Cyan)
+    if len(pred_boxes) > 0:
+        boxes_param['Prediction (Finetuned)'] = (pred_boxes, (0.0, 0.8, 1.0, 1.0))
+
+    # 2. Ground Truth (Green)
     if args.show_gt:
+        gt_boxes = []
         for inst in sample.get('instances', []):
             if inst.get('bbox_label', -1) >= 0:
                 gt_boxes.append(inst['bbox_3d'])
-    gt_boxes = np.asarray(gt_boxes, dtype=np.float32) if gt_boxes else np.zeros((0, 7), np.float32)
+        
+        if gt_boxes:
+            gt_boxes_np = np.asarray(gt_boxes, dtype=np.float32)
+            boxes_param['Ground Truth'] = (gt_boxes_np, (0.0, 1.0, 0.0, 1.0))
 
-    fig = Figure()
-    ax = fig[0, 0]
-    ax.add_scatter3d(
-        positions=pts.astype(np.float32),
-        colors=(0.6, 0.6, 0.6, 0.8),
-        sizes=1.0,
+    render_with_threejs(
+        pts,
+        boxes_param,
+        title=f"SiT Finetuned Prediction - Sample {args.idx} (Frame {frame_id})",
+        block=not args.no_block,
+        output_dir=None
     )
-
-    pred_lines = boxes_to_lines(pred_boxes)
-    if pred_lines.size > 0:
-        ax.add_lines(data=pred_lines, colors=(0.0, 0.8, 1.0, 1.0), thickness=2.0, name="pred")
-
-    if gt_boxes.size > 0:
-        gt_lines = boxes_to_lines(gt_boxes)
-        ax.add_lines(data=gt_lines, colors=(0.0, 1.0, 0.0, 1.0), thickness=2.0, name="gt")
-
-    pmin, pmax = pts.min(axis=0), pts.max(axis=0)
-    ax.camera.set_range(pmin, pmax)
-    ax.title = f"SiT fine-tuned - Sample {args.idx} (Frame {frame_id})"
-
-    fig.show()
-    if not args.no_block:
-        fig.app.run()
 
 
 if __name__ == '__main__':
