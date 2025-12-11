@@ -61,6 +61,8 @@ RUN apt-get update && \
     libgles2-mesa \
     mesa-vulkan-drivers \
     vulkan-tools \
+    libvulkan1 \
+    vulkan-validationlayers \
     mesa-utils \
     # Xvfb (X Virtual Framebuffer) for headless GUI applications
     # Use with: xvfb-run -a python ... --web ...
