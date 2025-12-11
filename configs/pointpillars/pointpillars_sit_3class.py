@@ -9,6 +9,7 @@ point_cloud_range = [-50, -50, -5, 50, 50, 3]  # SiT point cloud range
 # SiT uses normalized layout: data/sit/training/velodyne, consistent with sit-3d base config.
 data_root = 'data/sit/'
 class_names = ['Pedestrian', 'Car']
+input_modality = dict(use_lidar=True, use_camera=False)
 metainfo = dict(classes=class_names)
 backend_args = None
 

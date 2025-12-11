@@ -5,8 +5,14 @@ This script checks:
 1. How many sequences exist in raw data (by scene type)
 2. How many frames were converted
 3. Whether all scene types are represented
+
+Usage:
+    python tools/analysis_tools/sit_verify_all_scenes_converted.py \
+        --raw-root /path/to/raw/data \
+        --converted-root /path/to/converted/data
 """
 
+import argparse
 import os
 from pathlib import Path
 from collections import defaultdict
@@ -70,12 +76,50 @@ def estimate_expected_frames(scene_counts):
     return total
 
 def main():
-    raw_root = '/data/sit/raw'
-    converted_root = 'data/sit'
+    parser = argparse.ArgumentParser(
+        description='Verify that data from all scene type subfolders was converted',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Use default paths (raw: /data/sit/raw, converted: data/sit)
+  python tools/analysis_tools/sit_verify_all_scenes_converted.py
+
+  # Specify custom paths
+  python tools/analysis_tools/sit_verify_all_scenes_converted.py \\
+      --raw-root /run/media/user/drive/datasets/sit/raw \\
+      --converted-root /workspace/mmdetection3d/data/sit
+
+  # Use paths relative to current directory
+  python tools/analysis_tools/sit_verify_all_scenes_converted.py \\
+      --raw-root ../raw_data/sit \\
+      --converted-root ./data/sit
+        """
+    )
+    parser.add_argument(
+        '--raw-root',
+        type=str,
+        default='/data/sit/raw',
+        help='Root directory containing raw SiT scene type subfolders '
+             '(default: /data/sit/raw)'
+    )
+    parser.add_argument(
+        '--converted-root',
+        type=str,
+        default='data/sit',
+        help='Root directory containing converted SiT data '
+             '(default: data/sit)'
+    )
+    
+    args = parser.parse_args()
+    raw_root = args.raw_root
+    converted_root = args.converted_root
     
     print("=" * 80)
     print("Verifying SiT Dataset Conversion Coverage")
     print("=" * 80)
+    print()
+    print(f"Raw data root:      {raw_root}")
+    print(f"Converted data root: {converted_root}")
     print()
     
     # Count raw sequences
