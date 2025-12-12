@@ -38,6 +38,22 @@ xrStatusDiv.style.opacity = '0.9';
 xrStatusDiv.innerHTML = '<strong>WebXR:</strong> checking…';
 if (infoDiv) infoDiv.appendChild(xrStatusDiv);
 
+// FPS mode indicator
+const fpsModeIndicator = document.createElement('div');
+fpsModeIndicator.style.position = 'fixed';
+fpsModeIndicator.style.top = '10px';
+fpsModeIndicator.style.right = '10px';
+fpsModeIndicator.style.background = 'rgba(0, 150, 0, 0.8)';
+fpsModeIndicator.style.color = 'white';
+fpsModeIndicator.style.padding = '8px 12px';
+fpsModeIndicator.style.borderRadius = '6px';
+fpsModeIndicator.style.fontSize = '14px';
+fpsModeIndicator.style.fontFamily = 'monospace';
+fpsModeIndicator.style.display = 'none';
+fpsModeIndicator.style.zIndex = '1000';
+fpsModeIndicator.innerHTML = 'FPS MODE<br>WASD: Move | Mouse: Look | F: Toggle | Shift: Faster';
+document.body.appendChild(fpsModeIndicator);
+
 async function updateXRStatus() {
     if (!('xr' in navigator)) {
         xrStatusDiv.innerHTML = '<strong>WebXR:</strong> navigator.xr not available (Quest Browser WebXR may be disabled)';
@@ -284,6 +300,7 @@ camera.position.set(
 // Controls Setup
 const clock = new THREE.Clock();
 let isFlyMode = false;
+let isFPSMode = false; // FPS-style WASD controls
 
 // Orbit Controls (Default)
 const orbitControls = new OrbitControls(camera, renderer.domElement);
@@ -306,6 +323,194 @@ flyControls.rollSpeed = Math.PI / 6;
 flyControls.autoForward = false;
 flyControls.dragToLook = true;
 flyControls.enabled = false; // Start disabled
+
+// FPS-style WASD controls
+const fpsControls = {
+    keys: {
+        forward: false,
+        backward: false,
+        left: false,
+        right: false,
+        up: false,      // Space
+        down: false,   // Control or C
+        shift: false   // Shift for speed boost
+    },
+    mouse: {
+        isLocked: false,
+        sensitivity: 0.002,
+        pitch: 0,
+        yaw: 0
+    },
+    speed: cameraDistance * 0.05, // Movement speed (reduced for better control)
+    shiftSpeed: cameraDistance * 0.15 // Faster speed when holding shift
+};
+
+// Keyboard event handlers for FPS mode
+const keyMap = {
+    'KeyW': 'forward',
+    'KeyS': 'backward',
+    'KeyA': 'left',
+    'KeyD': 'right',
+    'Space': 'up',
+    'KeyC': 'down',
+    'ControlLeft': 'down',
+    'ControlRight': 'down',
+    'ShiftLeft': 'shift',
+    'ShiftRight': 'shift'
+};
+
+window.addEventListener('keydown', (event) => {
+    if (renderer.xr.isPresenting) return; // Don't interfere with VR
+    
+    const key = keyMap[event.code];
+    if (key && isFPSMode) {
+        fpsControls.keys[key] = true;
+        event.preventDefault();
+    }
+    
+    // Toggle FPS mode with 'F' key
+    if (event.code === 'KeyF' && !renderer.xr.isPresenting) {
+        isFPSMode = !isFPSMode;
+        orbitControls.enabled = !isFPSMode;
+        flyControls.enabled = false;
+        isFlyMode = false;
+        
+        if (isFPSMode) {
+            // Initialize camera rotation for FPS mode (Z-up coordinate system)
+            // Get current camera direction and convert to yaw/pitch
+            const direction = new THREE.Vector3();
+            camera.getWorldDirection(direction);
+            
+            // In Z-up space: yaw is rotation around Z axis (horizontal in X-Y plane)
+            // Calculate yaw from X and Y components
+            fpsControls.mouse.yaw = Math.atan2(direction.x, direction.y);
+            
+            // Pitch is rotation around the horizontal axis (vertical look up/down)
+            // In Z-up, this affects the Z component
+            const horizontalLength = Math.sqrt(direction.x * direction.x + direction.y * direction.y);
+            fpsControls.mouse.pitch = Math.atan2(-direction.z, horizontalLength);
+            
+            // Set camera rotation order and initial values
+            // For Z-up: we use ZYX order where Z is yaw, Y is pitch
+            camera.rotation.order = 'ZYX';
+            camera.rotation.z = fpsControls.mouse.yaw;
+            camera.rotation.y = fpsControls.mouse.pitch;
+            
+            // Lock pointer for mouse look
+            renderer.domElement.requestPointerLock();
+            fpsModeIndicator.style.display = 'block';
+            console.log('FPS mode enabled - WASD to move, mouse to look, F to toggle, Shift for faster, C/Ctrl to move down');
+        } else {
+            // Unlock pointer
+            document.exitPointerLock();
+            fpsModeIndicator.style.display = 'none';
+            console.log('Orbit mode enabled - F to toggle FPS mode');
+        }
+        event.preventDefault();
+    }
+});
+
+window.addEventListener('keyup', (event) => {
+    if (renderer.xr.isPresenting) return;
+    
+    const key = keyMap[event.code];
+    if (key && isFPSMode) {
+        fpsControls.keys[key] = false;
+        event.preventDefault();
+    }
+});
+
+// Mouse look (pointer lock)
+let previousMouseX = 0;
+let previousMouseY = 0;
+
+renderer.domElement.addEventListener('click', () => {
+    if (isFPSMode && !renderer.xr.isPresenting) {
+        renderer.domElement.requestPointerLock();
+    }
+});
+
+document.addEventListener('pointerlockchange', () => {
+    fpsControls.mouse.isLocked = document.pointerLockElement === renderer.domElement;
+    if (!fpsControls.mouse.isLocked && isFPSMode) {
+        // If pointer lock lost, disable FPS mode
+        isFPSMode = false;
+        orbitControls.enabled = true;
+        fpsModeIndicator.style.display = 'none';
+    }
+});
+
+document.addEventListener('mousemove', (event) => {
+    if (!fpsControls.mouse.isLocked || !isFPSMode || renderer.xr.isPresenting) return;
+    
+    const movementX = event.movementX || event.mozMovementX || event.webkitMovementX || 0;
+    const movementY = event.movementY || event.mozMovementY || event.webkitMovementY || 0;
+    
+    // Update yaw (horizontal rotation around Z axis in Z-up space)
+    fpsControls.mouse.yaw -= movementX * fpsControls.mouse.sensitivity;
+    
+    // Update pitch (vertical rotation) with limits
+    fpsControls.mouse.pitch -= movementY * fpsControls.mouse.sensitivity;
+    fpsControls.mouse.pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, fpsControls.mouse.pitch));
+    
+    // Apply rotation to camera (Z-up coordinate system)
+    camera.rotation.order = 'ZYX';
+    camera.rotation.z = fpsControls.mouse.yaw;
+    camera.rotation.y = fpsControls.mouse.pitch;
+});
+
+// FPS movement update function
+function updateFPSMovement(delta) {
+    if (!isFPSMode || renderer.xr.isPresenting) return;
+    
+    const moveSpeed = fpsControls.keys.shift ? fpsControls.shiftSpeed : fpsControls.speed;
+    const velocity = new THREE.Vector3();
+    
+    // Get camera direction vectors (in Z-up coordinate system)
+    const forward = new THREE.Vector3();
+    camera.getWorldDirection(forward);
+    forward.z = 0; // Keep movement horizontal in Z-up space (z is up, so horizontal is x-y plane)
+    if (forward.length() > 0.001) {
+        forward.normalize();
+    } else {
+        // If camera is looking straight up/down, use a default forward
+        forward.set(0, 1, 0).normalize();
+    }
+    
+    // Right vector: cross product of forward and up (which is Z in Z-up space)
+    const up = new THREE.Vector3(0, 0, 1); // Z-up
+    const right = new THREE.Vector3();
+    right.crossVectors(forward, up).normalize();
+    
+    // Build movement vector
+    if (fpsControls.keys.forward) velocity.add(forward);
+    if (fpsControls.keys.backward) velocity.sub(forward);
+    if (fpsControls.keys.right) velocity.add(right);
+    if (fpsControls.keys.left) velocity.sub(right);
+    
+    // Vertical movement (up/down in Z-up space)
+    if (fpsControls.keys.up) velocity.z += moveSpeed * delta;
+    if (fpsControls.keys.down) velocity.z -= moveSpeed * delta;
+    
+    // Normalize and scale by speed
+    if (velocity.length() > 0) {
+        // Don't normalize vertical movement, just horizontal
+        const horizontalVel = new THREE.Vector3(velocity.x, velocity.y, 0);
+        if (horizontalVel.length() > 0) {
+            horizontalVel.normalize();
+            horizontalVel.multiplyScalar(moveSpeed * delta);
+            velocity.x = horizontalVel.x;
+            velocity.y = horizontalVel.y;
+        }
+        // Vertical movement is already scaled
+        if (Math.abs(velocity.z) > 0) {
+            velocity.z = Math.sign(velocity.z) * moveSpeed * delta;
+        }
+        
+        // Apply movement
+        camera.position.add(velocity);
+    }
+}
 
 // XR rig + controllers/hands
 // We move a "rig" Group for teleport / locomotion (camera pose comes from headset).
@@ -912,7 +1117,9 @@ function animate() {
 
     // Desktop controls only when not in XR
     if (!renderer.xr.isPresenting) {
-        if (isFlyMode) {
+        if (isFPSMode) {
+            updateFPSMovement(delta);
+        } else if (isFlyMode) {
             flyControls.update(delta);
         } else {
             orbitControls.update();
