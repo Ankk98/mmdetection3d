@@ -8,17 +8,26 @@ const camera = new THREE.PerspectiveCamera(
     0.1,
     10000
 );
-camera.up.set(0, 0, 1); // Set Z as up axis for LiDAR data
+
+// LiDAR data is Z-up, but WebXR expects Y-up.
+// We'll put all content in a container that we can rotate for VR.
+const sceneContainer = new THREE.Group();
+scene.add(sceneContainer);
+
+// For desktop viewing, set camera up to Z
+camera.up.set(0, 0, 1);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.getElementById('container').appendChild(renderer.domElement);
 
 // WebXR (VR)
 // - Desktop usage is unchanged unless you explicitly enter a VR session.
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
+if (renderer.xr.setFoveation) renderer.xr.setFoveation(1.0);
 
 // On-screen XR diagnostics (shows up in the existing info overlay)
 const infoDiv = document.getElementById('info');
@@ -44,18 +53,27 @@ async function updateXRStatus() {
     }
 }
 
-// Standard VRButton (if available)
-if (typeof VRButton !== 'undefined' && VRButton && VRButton.createButton) {
-    const vrBtn = VRButton.createButton(renderer);
-    document.body.appendChild(vrBtn);
-} else {
-    console.warn("VRButton not available; WebXR button will not be shown.");
+// Standard VRButton (automatically detects WebXR support and shows button or error)
+console.log('[VRButton] Attempting to create VRButton...');
+console.log('[VRButton] VRButton available:', typeof VRButton !== 'undefined');
+console.log('[VRButton] renderer.xr.enabled:', renderer.xr.enabled);
+
+try {
+    const vrButton = VRButton.createButton(renderer);
+    console.log('[VRButton] Button created:', vrButton);
+    console.log('[VRButton] Button text:', vrButton.textContent);
+    console.log('[VRButton] Button style.display:', vrButton.style.display);
+    document.body.appendChild(vrButton);
+    console.log('[VRButton] Button appended to body successfully');
+} catch (e) {
+    console.error("[VRButton] Failed to create button:", e);
+    xrStatusDiv.innerHTML += '<br><span style="color: #ff6666;">VRButton creation failed - see console</span>';
 }
 
-// Fallback "Enter VR (debug)" button that directly requests an XR session and
-// prints the exact error if the browser blocks it.
+// Enter VR button that directly requests an XR session and prints the exact
+// error if the browser blocks it (useful on Quest).
 const debugBtn = document.createElement('button');
-debugBtn.textContent = 'Enter VR (debug)';
+debugBtn.textContent = 'Enter VR';
 debugBtn.style.position = 'absolute';
 debugBtn.style.left = '10px';
 debugBtn.style.bottom = '10px';
@@ -72,6 +90,10 @@ document.body.appendChild(debugBtn);
 debugBtn.addEventListener('click', async () => {
     const st = await updateXRStatus();
     if (!st.hasXR) return;
+    if (!st.immersiveVR) {
+        xrStatusDiv.innerHTML = '<strong>WebXR:</strong> immersive-vr not supported/allowed (check https + WebXR settings)';
+        return;
+    }
     try {
         const sessionInit = {
             optionalFeatures: [
@@ -94,14 +116,63 @@ debugBtn.addEventListener('click', async () => {
 });
 
 // Kick off initial status check
-updateXRStatus();
+updateXRStatus().then(status => {
+    console.log('[WebXR] Initial status check:', status);
+    
+    // Add a visible WebXR status indicator
+    const statusIndicator = document.createElement('div');
+    statusIndicator.style.position = 'fixed';
+    statusIndicator.style.top = '50%';
+    statusIndicator.style.left = '50%';
+    statusIndicator.style.transform = 'translate(-50%, -50%)';
+    statusIndicator.style.background = 'rgba(0, 0, 0, 0.9)';
+    statusIndicator.style.color = 'white';
+    statusIndicator.style.padding = '20px';
+    statusIndicator.style.borderRadius = '10px';
+    statusIndicator.style.zIndex = '1000';
+    statusIndicator.style.maxWidth = '80%';
+    statusIndicator.style.textAlign = 'center';
+    statusIndicator.style.fontFamily = 'sans-serif';
+    
+    if (!status.hasXR) {
+        statusIndicator.innerHTML = `
+            <h3>⚠️ WebXR Not Available</h3>
+            <p>navigator.xr is not available in this browser.</p>
+            <p><strong>On Quest:</strong> Use Quest Browser and enable WebXR in chrome://flags</p>
+            <button onclick="this.parentElement.remove()" style="margin-top: 10px; padding: 8px 16px; cursor: pointer;">Close</button>
+        `;
+        document.body.appendChild(statusIndicator);
+    } else if (!status.immersiveVR) {
+        statusIndicator.innerHTML = `
+            <h3>⚠️ WebXR Available but Immersive VR Not Supported</h3>
+            <p>navigator.xr exists but immersive-vr is not supported.</p>
+            <p><strong>Common fixes:</strong></p>
+            <ul style="text-align: left;">
+                <li>Ensure you're using HTTPS (not HTTP)</li>
+                <li>Enable WebXR in chrome://flags on Quest Browser</li>
+                <li>Check if site is marked as VR-enabled in browser permissions</li>
+            </ul>
+            <button onclick="this.parentElement.remove()" style="margin-top: 10px; padding: 8px 16px; cursor: pointer;">Close</button>
+        `;
+        document.body.appendChild(statusIndicator);
+    } else {
+        // Success - briefly show and auto-hide
+        statusIndicator.innerHTML = `
+            <h3>✅ WebXR Ready</h3>
+            <p>immersive-vr is supported!</p>
+            <p>Look for the VR button to enter VR mode.</p>
+        `;
+        document.body.appendChild(statusIndicator);
+        setTimeout(() => statusIndicator.remove(), 3000);
+    }
+});
 
 // Lighting
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-scene.add(ambientLight);
+sceneContainer.add(ambientLight);
 const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
 directionalLight.position.set(1, 1, 1);
-scene.add(directionalLight);
+sceneContainer.add(directionalLight);
 
 // Point cloud
 // Expecting global variable 'pointsData' (flat array of coordinates)
@@ -135,7 +206,7 @@ const pointsMaterial = new THREE.PointsMaterial({
 });
 
 const pointsCloud = new THREE.Points(pointsGeometry, pointsMaterial);
-scene.add(pointsCloud);
+sceneContainer.add(pointsCloud);
 
 // Bounding boxes
 // Expecting global variable 'boxesData' (object with label -> {lines, color})
@@ -199,7 +270,7 @@ for (const [label, boxData] of Object.entries(boxesData)) {
     });
     
     const lineSegments = new THREE.LineSegments(geometry, material);
-    scene.add(lineSegments);
+    sceneContainer.add(lineSegments);
 }
 
 // Camera positioning
@@ -215,7 +286,7 @@ const clock = new THREE.Clock();
 let isFlyMode = false;
 
 // Orbit Controls (Default)
-const orbitControls = new THREE.OrbitControls(camera, renderer.domElement);
+const orbitControls = new OrbitControls(camera, renderer.domElement);
 // Set target to (0,0,0) - the LiDAR sensor origin - instead of geometric center of points
 orbitControls.target.set(0, 0, 0); 
 orbitControls.enableDamping = true;
@@ -228,7 +299,7 @@ orbitControls.rotateSpeed = 0.8;
 orbitControls.zoomSpeed = 1.2;
 
 // Fly Controls
-const flyControls = new THREE.FlyControls(camera, renderer.domElement);
+const flyControls = new FlyControls(camera, renderer.domElement);
 flyControls.movementSpeed = cameraDistance * 0.5; // Adjust speed relative to scene size
 flyControls.domElement = renderer.domElement;
 flyControls.rollSpeed = Math.PI / 6;
@@ -236,28 +307,198 @@ flyControls.autoForward = false;
 flyControls.dragToLook = true;
 flyControls.enabled = false; // Start disabled
 
-// XR rig + controllers
+// XR rig + controllers/hands
 // We move a "rig" Group for teleport / locomotion (camera pose comes from headset).
 const xrRig = new THREE.Group();
 xrRig.add(camera);
 scene.add(xrRig);
 
-// Simple ground plane (invisible) used for teleport raycasts.
-// Note: Z is up in this viewer, so a plane in XY at z=0 is a "ground" plane.
+// Ground plane for teleport (1.6m below LiDAR origin = typical floor level)
+// LiDAR sensor at (0,0,0) is at eye height, so ground is at y=-1.6
 const xrGround = new THREE.Mesh(
     new THREE.PlaneGeometry(2000, 2000),
     new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.0, side: THREE.DoubleSide })
 );
-xrGround.position.set(0, 0, 0);
+xrGround.rotation.x = -Math.PI / 2; // Rotate to horizontal (XZ plane)
+xrGround.position.set(0, -1.6, 0); // Ground 1.6m below sensor
 scene.add(xrGround);
+
+// Teleport target marker (shows where you'll land)
+const teleportMarker = new THREE.Mesh(
+    new THREE.RingGeometry(0.2, 0.3, 32),
+    new THREE.MeshBasicMaterial({ color: 0x00ff00, side: THREE.DoubleSide, transparent: true, opacity: 0.7 })
+);
+teleportMarker.rotation.x = -Math.PI / 2;
+teleportMarker.visible = false;
+scene.add(teleportMarker);
+
+// Optional: grid helper at ground level for better spatial reference in VR
+const gridHelper = new THREE.GridHelper(100, 50, 0x444444, 0x222222);
+gridHelper.position.y = -1.6; // Ground is 1.6m below origin (typical eye height)
+gridHelper.visible = false; // Will be shown only in VR
+scene.add(gridHelper);
+
+// LiDAR sensor origin indicator (small axes at 0,0,0 - where sensor was)
+const axesHelper = new THREE.AxesHelper(0.5);
+axesHelper.visible = false;
+scene.add(axesHelper);
+
+// Add a glowing sphere at origin to mark LiDAR sensor position
+const originMarker = new THREE.Mesh(
+    new THREE.SphereGeometry(0.08, 16, 16),
+    new THREE.MeshBasicMaterial({ 
+        color: 0x00ffff,
+        transparent: true,
+        opacity: 0.8
+    })
+);
+originMarker.visible = false;
+scene.add(originMarker);
+
+// Add a label for the origin
+function createOriginLabel() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.fillRect(0, 0, 512, 128);
+    
+    ctx.fillStyle = '#00ffff';
+    ctx.font = 'bold 40px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('LiDAR Sensor Origin', 256, 40);
+    ctx.font = '32px Arial';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText('(0, 0, 0)', 256, 85);
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    const geometry = new THREE.PlaneGeometry(0.5, 0.125);
+    const material = new THREE.MeshBasicMaterial({ 
+        map: texture, 
+        transparent: true,
+        side: THREE.DoubleSide
+    });
+    
+    const label = new THREE.Mesh(geometry, material);
+    label.position.set(0, 0.15, 0);
+    label.visible = false;
+    return label;
+}
+
+const originLabel = createOriginLabel();
+scene.add(originLabel);
+
+// VR Controls UI Panel (created with canvas texture)
+function createVRControlsPanel() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1024;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d');
+    
+    // Background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.fillRect(0, 0, 1024, 512);
+    
+    // Border
+    ctx.strokeStyle = '#00ff00';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(10, 10, 1004, 492);
+    
+    // Title
+    ctx.fillStyle = '#00ff00';
+    ctx.font = 'bold 56px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText('VR Controls', 40, 80);
+    
+    // Controls list
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '36px Arial';
+    let y = 150;
+    const controls = [
+        '🎯 Trigger: Point at ground → Teleport',
+        '🕹️  Left Thumbstick: Walk/Strafe',
+        '🤏 Grip: Toggle this help panel',
+        '👁️  Origin (0,0,0): LiDAR Sensor Position',
+    ];
+    
+    controls.forEach(text => {
+        ctx.fillText(text, 60, y);
+        y += 70;
+    });
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    const geometry = new THREE.PlaneGeometry(2, 1);
+    const material = new THREE.MeshBasicMaterial({ 
+        map: texture, 
+        transparent: true,
+        side: THREE.DoubleSide
+    });
+    
+    const panel = new THREE.Mesh(geometry, material);
+    panel.visible = false;
+    return panel;
+}
+
+const controlsPanel = createVRControlsPanel();
+// Position panel 2m in front, slightly above eye level, and to the left
+controlsPanel.position.set(-0.5, 0.4, -2);
+xrRig.add(controlsPanel); // Attach to rig so it follows the user
+
+// Create small button label helpers for controllers
+function createButtonLabel(text, color = '#00ff00') {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    ctx.fillRect(0, 0, 256, 64);
+    
+    ctx.fillStyle = color;
+    ctx.font = 'bold 24px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 128, 32);
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    const geometry = new THREE.PlaneGeometry(0.12, 0.03);
+    const material = new THREE.MeshBasicMaterial({ 
+        map: texture, 
+        transparent: true,
+        side: THREE.DoubleSide
+    });
+    
+    return new THREE.Mesh(geometry, material);
+}
 
 const raycaster = new THREE.Raycaster();
 const _tmpMatrix = new THREE.Matrix4();
+
+const controllerModelFactory = new XRControllerModelFactory();
+const handModelFactory = new XRHandModelFactory();
 
 function addXRController(index) {
     const controller = renderer.xr.getController(index);
     controller.userData.index = index;
     controller.userData.isSelecting = false;
+    controller.userData.gamepad = null;
+    controller.userData.handedness = null;
+    controller.userData.inputSource = null;
+
+    controller.addEventListener('connected', (event) => {
+        // event.data is the XRInputSource
+        controller.userData.inputSource = event.data ?? null;
+        controller.userData.gamepad = event.data?.gamepad ?? null;
+        controller.userData.handedness = event.data?.handedness ?? null;
+    });
+    controller.addEventListener('disconnected', () => {
+        controller.userData.inputSource = null;
+        controller.userData.gamepad = null;
+        controller.userData.handedness = null;
+    });
 
     // Ray line (controller forward is -Z in local space)
     const lineGeom = new THREE.BufferGeometry();
@@ -271,29 +512,53 @@ function addXRController(index) {
     line.scale.z = 20; // ray length
     controller.add(line);
 
-    controller.addEventListener('selectstart', () => { controller.userData.isSelecting = true; });
+    controller.addEventListener('selectstart', () => { 
+        controller.userData.isSelecting = true;
+    });
+    
     controller.addEventListener('selectend', () => {
         controller.userData.isSelecting = false;
+        teleportMarker.visible = false;
 
         // Teleport: cast ray to ground plane and move rig there.
         const hit = intersectGround(controller);
         if (hit) {
-            // Move rig to target (keep z at current rig height offset)
+            // Move rig to target in XZ plane (horizontal), keep Y (height) constant
             xrRig.position.x = hit.point.x;
-            xrRig.position.y = hit.point.y;
-            // Keep existing vertical offset to avoid snapping eye height
+            xrRig.position.z = hit.point.z;
+            // Y (vertical) stays at current user height
+        }
+    });
+    
+    // Squeeze (grip) button toggles controls panel
+    controller.addEventListener('squeezestart', () => {
+        if (controlsPanel) {
+            controlsPanel.visible = !controlsPanel.visible;
         }
     });
 
     xrRig.add(controller);
 
     // Controller grip with model (visual controller)
-    if (typeof XRControllerModelFactory !== 'undefined') {
-        const controllerGrip = renderer.xr.getControllerGrip(index);
-        const factory = new XRControllerModelFactory();
-        controllerGrip.add(factory.createControllerModel(controllerGrip));
-        xrRig.add(controllerGrip);
-    }
+    const controllerGrip = renderer.xr.getControllerGrip(index);
+    controllerGrip.add(controllerModelFactory.createControllerModel(controllerGrip));
+    
+    // Add button hint labels to controller (positioned above controller)
+    const triggerLabel = createButtonLabel('Trigger: Teleport');
+    triggerLabel.position.set(0, 0.08, 0);
+    triggerLabel.rotation.x = -Math.PI / 4; // Tilt toward user
+    triggerLabel.visible = false; // Initially hidden
+    controllerGrip.add(triggerLabel);
+    controller.userData.triggerLabel = triggerLabel;
+    
+    const gripLabel = createButtonLabel('Grip: Toggle Help');
+    gripLabel.position.set(0, 0.04, 0);
+    gripLabel.rotation.x = -Math.PI / 4;
+    gripLabel.visible = false;
+    controllerGrip.add(gripLabel);
+    controller.userData.gripLabel = gripLabel;
+    
+    xrRig.add(controllerGrip);
 
     return controller;
 }
@@ -310,6 +575,18 @@ function intersectGround(controller) {
 const xrController1 = addXRController(0);
 const xrController2 = addXRController(1);
 
+// Optional hand tracking (Quest supports it when enabled)
+try {
+    const hand1 = renderer.xr.getHand(0);
+    const hand2 = renderer.xr.getHand(1);
+    hand1.add(handModelFactory.createHandModel(hand1, 'mesh'));
+    hand2.add(handModelFactory.createHandModel(hand2, 'mesh'));
+    xrRig.add(hand1);
+    xrRig.add(hand2);
+} catch (e) {
+    console.warn("Hand tracking unavailable:", e);
+}
+
 function setDesktopControlsEnabled(enabled) {
     orbitControls.enabled = enabled;
     // Fly controls are mutually exclusive with orbit (keep previous mode if needed)
@@ -319,14 +596,109 @@ function setDesktopControlsEnabled(enabled) {
     }
 }
 
+let controlsHelpTimeout = null;
+
 renderer.xr.addEventListener('sessionstart', () => {
     setDesktopControlsEnabled(false);
-    console.log("XR session started");
+    
+    // Rotate scene content from Z-up (LiDAR) to Y-up (VR standard)
+    // Rotate -90° around X axis: Z-up becomes Y-up
+    sceneContainer.rotation.x = -Math.PI / 2;
+    
+    // Position user so LiDAR sensor origin (0,0,0) is at eye level:
+    // - local-floor reference space: user's floor is at y=0, eyes at y≈1.6
+    // - To make origin at eye level, place floor 1.6m below origin
+    // - So xrRig.y = -1.6, then user eyes are at y = -1.6 + 1.6 = 0 (origin)
+    xrRig.position.set(0, -1.6, 3); // Start 3m in front of origin, eyes at origin height
+    
+    // Show VR helpers
+    gridHelper.visible = true;
+    axesHelper.visible = true;
+    originMarker.visible = true;
+    originLabel.visible = true;
+    controlsPanel.visible = true;
+    
+    // Show controller button labels for 8 seconds, then hide
+    if (xrController1?.userData?.triggerLabel) xrController1.userData.triggerLabel.visible = true;
+    if (xrController1?.userData?.gripLabel) xrController1.userData.gripLabel.visible = true;
+    if (xrController2?.userData?.triggerLabel) xrController2.userData.triggerLabel.visible = true;
+    if (xrController2?.userData?.gripLabel) xrController2.userData.gripLabel.visible = true;
+    
+    controlsHelpTimeout = setTimeout(() => {
+        if (xrController1?.userData?.triggerLabel) xrController1.userData.triggerLabel.visible = false;
+        if (xrController1?.userData?.gripLabel) xrController1.userData.gripLabel.visible = false;
+        if (xrController2?.userData?.triggerLabel) xrController2.userData.triggerLabel.visible = false;
+        if (xrController2?.userData?.gripLabel) xrController2.userData.gripLabel.visible = false;
+    }, 8000);
+    
+    console.log("XR session started - LiDAR origin at eye level");
 });
+
 renderer.xr.addEventListener('sessionend', () => {
     setDesktopControlsEnabled(true);
-    console.log("XR session ended");
+    
+    // Clear any pending timeouts
+    if (controlsHelpTimeout) {
+        clearTimeout(controlsHelpTimeout);
+        controlsHelpTimeout = null;
+    }
+    
+    // Restore original Z-up orientation for desktop
+    sceneContainer.rotation.x = 0;
+    
+    // Hide VR helpers
+    gridHelper.visible = false;
+    axesHelper.visible = false;
+    originMarker.visible = false;
+    originLabel.visible = false;
+    controlsPanel.visible = false;
+    
+    // Hide controller labels
+    if (xrController1?.userData?.triggerLabel) xrController1.userData.triggerLabel.visible = false;
+    if (xrController1?.userData?.gripLabel) xrController1.userData.gripLabel.visible = false;
+    if (xrController2?.userData?.triggerLabel) xrController2.userData.triggerLabel.visible = false;
+    if (xrController2?.userData?.gripLabel) xrController2.userData.gripLabel.visible = false;
+    
+    console.log("XR session ended - scene restored to Z-up");
 });
+
+// Simple XR thumbstick locomotion (conservative defaults).
+function updateXrLocomotion(delta) {
+    if (!renderer.xr.isPresenting) return;
+
+    // Prefer left-handed controller for locomotion, else fall back to controller 0.
+    const leftController =
+        (xrController1?.userData?.handedness === 'left') ? xrController1 :
+        (xrController2?.userData?.handedness === 'left') ? xrController2 :
+        xrController1;
+
+    const gp = leftController?.userData?.gamepad;
+    if (!gp || !gp.axes || gp.axes.length < 2) return;
+
+    // Different runtimes map axes differently; try both layouts.
+    const x = gp.axes[2] ?? gp.axes[0] ?? 0;
+    const y = gp.axes[3] ?? gp.axes[1] ?? 0;
+    const deadzone = 0.15;
+    const ax = Math.abs(x) > deadzone ? x : 0;
+    const ay = Math.abs(y) > deadzone ? y : 0;
+    if (ax === 0 && ay === 0) return;
+
+    const speed = 2.0; // 2 m/s locomotion speed
+
+    // Get camera forward direction projected onto horizontal plane (XZ in Y-up VR)
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    dir.y = 0; // Keep movement horizontal in Y-up VR space
+    if (dir.lengthSq() < 1e-6) return;
+    dir.normalize();
+    
+    // Right vector perpendicular to forward in XZ plane
+    const right = new THREE.Vector3(-dir.z, 0, dir.x);
+
+    // Thumbstick: y-axis negative = forward, x-axis = strafe
+    xrRig.position.addScaledVector(dir, (-ay) * speed * delta);
+    xrRig.position.addScaledVector(right, ax * speed * delta);
+}
 
 function toggleControls() {
     isFlyMode = !isFlyMode;
@@ -404,9 +776,38 @@ function animate() {
         } else {
             orbitControls.update();
         }
+    } else {
+        updateXrLocomotion(delta);
+        
+        // Update teleport marker position based on controller pointing
+        let foundTarget = false;
+        for (const controller of [xrController1, xrController2]) {
+            if (controller && controller.userData.isSelecting) {
+                const hit = intersectGround(controller);
+                if (hit) {
+                    teleportMarker.position.copy(hit.point);
+                    teleportMarker.visible = true;
+                    foundTarget = true;
+                    break;
+                }
+            }
+        }
+        if (!foundTarget) {
+            teleportMarker.visible = false;
+        }
+        
+        // Make origin label always face the camera (billboard)
+        if (originLabel && originLabel.visible) {
+            originLabel.lookAt(camera.position);
+        }
+        
+        // Pulse the origin marker for visibility
+        if (originMarker && originMarker.visible) {
+            const scale = 1.0 + 0.3 * Math.sin(Date.now() * 0.003);
+            originMarker.scale.setScalar(scale);
+        }
     }
 
-    // In XR we keep the controller rays visible; teleport is handled on selectend.
     renderer.render(scene, camera);
 }
 

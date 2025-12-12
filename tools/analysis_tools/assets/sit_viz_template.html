@@ -63,19 +63,35 @@
     <div id="legend">
         <!-- Legend items will be injected here -->
     </div>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    <script src="https://unpkg.com/three@0.128.0/examples/js/controls/FlyControls.js"></script>
-    <script src="https://unpkg.com/three@0.128.0/examples/js/webxr/VRButton.js"></script>
-    <script src="https://unpkg.com/three@0.128.0/examples/js/webxr/XRControllerModelFactory.js"></script>
-    <script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module">
+        // Modern Three.js module build (no global THREE).
+        // NOTE: Must be served over http(s), not file://
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { FlyControls } from 'three/addons/controls/FlyControls.js';
+        import { VRButton } from 'three/addons/webxr/VRButton.js';
+        import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+        import { XRHandModelFactory } from 'three/addons/webxr/XRHandModelFactory.js';
+
+        // Make THREE global for debugging
+        window.THREE = THREE;
+        window.VRButton = VRButton;
+
         // Data injected by Python script
         const pointsData = __POINTS_DATA__;
         const boxesData = __BOXES_DATA__;
         const center = __CENTER__;
         const cameraDistance = __CAMERA_DISTANCE__;
 
-        // Visualization logic
+        // Visualization logic (expects the imports + data above to exist in module scope)
         __VISUALIZATION_LOGIC__
     </script>
 </body>
