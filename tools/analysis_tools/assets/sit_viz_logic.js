@@ -419,9 +419,10 @@ function createVRControlsPanel() {
     let y = 150;
     const controls = [
         '🎯 Trigger: Point at ground → Teleport',
-        '🕹️  Left Thumbstick: Walk/Strafe',
-        '🤏 Grip: Toggle this help panel',
-        '👁️  Origin (0,0,0): LiDAR Sensor Position',
+        '🕹️  Left Stick: Walk/Strafe',
+        '⬆️  Left Grip + Stick Up/Down: Height Adjust',
+        '🎮 Right Stick: Look Around (Yaw/Pitch)',
+        '🤏 Right Grip: Toggle Help Panels',
     ];
     
     controls.forEach(text => {
@@ -444,8 +445,81 @@ function createVRControlsPanel() {
 
 const controlsPanel = createVRControlsPanel();
 // Position panel 2m in front, slightly above eye level, and to the left
-controlsPanel.position.set(-0.5, 0.4, -2);
+controlsPanel.position.set(-0.75, 0.4, -2);
 xrRig.add(controlsPanel); // Attach to rig so it follows the user
+
+// Create VR Legend Panel showing box colors/classes
+function createVRLegendPanel() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d');
+    
+    // Background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.fillRect(0, 0, 512, 512);
+    
+    // Border
+    ctx.strokeStyle = '#00ff00';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(8, 8, 496, 496);
+    
+    // Title
+    ctx.fillStyle = '#00ff00';
+    ctx.font = 'bold 40px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText('Legend', 30, 50);
+    
+    // Draw legend items
+    let y = 100;
+    const entries = Object.entries(boxesData);
+    
+    if (entries.length === 0) {
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '28px Arial';
+        ctx.fillText('No boxes to display', 30, y);
+    } else {
+        for (const [label, boxData] of entries) {
+            if (boxData.lines.length === 0) continue;
+            
+            const color = boxData.color;
+            const r = Math.floor(color[0] * 255);
+            const g = Math.floor(color[1] * 255);
+            const b = Math.floor(color[2] * 255);
+            
+            // Color box
+            ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+            ctx.fillRect(30, y - 20, 35, 35);
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(30, y - 20, 35, 35);
+            
+            // Label text
+            ctx.fillStyle = '#ffffff';
+            ctx.font = '28px Arial';
+            ctx.fillText(`${label} (${boxData.lines.length})`, 80, y + 5);
+            
+            y += 55;
+        }
+    }
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    const geometry = new THREE.PlaneGeometry(1, 1);
+    const material = new THREE.MeshBasicMaterial({ 
+        map: texture, 
+        transparent: true,
+        side: THREE.DoubleSide
+    });
+    
+    const panel = new THREE.Mesh(geometry, material);
+    panel.visible = false;
+    return panel;
+}
+
+const vrLegendPanel = createVRLegendPanel();
+// Position legend to the right of controls (with spacing to avoid overlap)
+vrLegendPanel.position.set(0.75, 0.4, -2);
+xrRig.add(vrLegendPanel);
 
 // Create small button label helpers for controllers
 function createButtonLabel(text, color = '#00ff00') {
@@ -530,10 +604,17 @@ function addXRController(index) {
         }
     });
     
-    // Squeeze (grip) button toggles controls panel
+    // Squeeze (grip) button on RIGHT controller toggles help panels
+    // (Left grip is used for height adjustment)
     controller.addEventListener('squeezestart', () => {
-        if (controlsPanel) {
-            controlsPanel.visible = !controlsPanel.visible;
+        // Only toggle panels if this is the right controller
+        const isRightController = controller.userData.handedness === 'right' ||
+                                   (controller.userData.handedness !== 'left' && controller.userData.index === 1);
+        
+        if (isRightController && controlsPanel && vrLegendPanel) {
+            const newState = !controlsPanel.visible;
+            controlsPanel.visible = newState;
+            vrLegendPanel.visible = newState;
         }
     });
 
@@ -617,6 +698,7 @@ renderer.xr.addEventListener('sessionstart', () => {
     originMarker.visible = true;
     originLabel.visible = true;
     controlsPanel.visible = true;
+    vrLegendPanel.visible = true;
     
     // Show controller button labels for 8 seconds, then hide
     if (xrController1?.userData?.triggerLabel) xrController1.userData.triggerLabel.visible = true;
@@ -652,6 +734,7 @@ renderer.xr.addEventListener('sessionend', () => {
     originMarker.visible = false;
     originLabel.visible = false;
     controlsPanel.visible = false;
+    vrLegendPanel.visible = false;
     
     // Hide controller labels
     if (xrController1?.userData?.triggerLabel) xrController1.userData.triggerLabel.visible = false;
@@ -662,42 +745,100 @@ renderer.xr.addEventListener('sessionend', () => {
     console.log("XR session ended - scene restored to Z-up");
 });
 
-// Simple XR thumbstick locomotion (conservative defaults).
+// Simple XR thumbstick locomotion + camera rotation (works in Y-up VR space)
 function updateXrLocomotion(delta) {
     if (!renderer.xr.isPresenting) return;
 
-    // Prefer left-handed controller for locomotion, else fall back to controller 0.
+    // Left controller for locomotion (walking/strafing)
     const leftController =
         (xrController1?.userData?.handedness === 'left') ? xrController1 :
         (xrController2?.userData?.handedness === 'left') ? xrController2 :
         xrController1;
 
-    const gp = leftController?.userData?.gamepad;
-    if (!gp || !gp.axes || gp.axes.length < 2) return;
+    const leftGp = leftController?.userData?.gamepad;
+    if (leftGp && leftGp.axes && leftGp.axes.length >= 2) {
+        // Quest controllers: axes[2,3] are thumbstick (left) or [0,1] fallback
+        const x = leftGp.axes[2] ?? leftGp.axes[0] ?? 0;
+        const y = leftGp.axes[3] ?? leftGp.axes[1] ?? 0;
+        const deadzone = 0.15;
+        const ax = Math.abs(x) > deadzone ? x : 0;
+        const ay = Math.abs(y) > deadzone ? y : 0;
+        
+        // Check if grip is pressed for height adjustment mode
+        const gripPressed = leftGp.buttons && leftGp.buttons.length > 1 && leftGp.buttons[1].pressed;
+        
+        if (gripPressed && ay !== 0) {
+            // Height adjustment mode: thumbstick up/down adjusts height
+            const heightSpeed = 1.0; // m/s
+            xrRig.position.y += ay * heightSpeed * delta;
+            console.log(`Height: ${xrRig.position.y.toFixed(2)}m`);
+        } else if (ax !== 0 || ay !== 0) {
+            // Normal locomotion mode
+            const speed = 2.0; // 2 m/s locomotion speed
 
-    // Different runtimes map axes differently; try both layouts.
-    const x = gp.axes[2] ?? gp.axes[0] ?? 0;
-    const y = gp.axes[3] ?? gp.axes[1] ?? 0;
-    const deadzone = 0.15;
-    const ax = Math.abs(x) > deadzone ? x : 0;
-    const ay = Math.abs(y) > deadzone ? y : 0;
-    if (ax === 0 && ay === 0) return;
+            // Get camera forward direction projected onto horizontal plane (XZ in Y-up VR)
+            const dir = new THREE.Vector3();
+            camera.getWorldDirection(dir);
+            dir.y = 0; // Keep movement horizontal in Y-up VR space
+            if (dir.lengthSq() > 1e-6) {
+                dir.normalize();
+                
+                // Right vector perpendicular to forward in XZ plane
+                const right = new THREE.Vector3(-dir.z, 0, dir.x);
 
-    const speed = 2.0; // 2 m/s locomotion speed
+                // Thumbstick: y-axis negative = forward, x-axis = strafe
+                xrRig.position.addScaledVector(dir, (-ay) * speed * delta);
+                xrRig.position.addScaledVector(right, ax * speed * delta);
+            }
+        }
+    }
 
-    // Get camera forward direction projected onto horizontal plane (XZ in Y-up VR)
-    const dir = new THREE.Vector3();
-    camera.getWorldDirection(dir);
-    dir.y = 0; // Keep movement horizontal in Y-up VR space
-    if (dir.lengthSq() < 1e-6) return;
-    dir.normalize();
-    
-    // Right vector perpendicular to forward in XZ plane
-    const right = new THREE.Vector3(-dir.z, 0, dir.x);
+    // Right controller for camera rotation (smooth turning / look around)
+    const rightController =
+        (xrController1?.userData?.handedness === 'right') ? xrController1 :
+        (xrController2?.userData?.handedness === 'right') ? xrController2 :
+        xrController2;
 
-    // Thumbstick: y-axis negative = forward, x-axis = strafe
-    xrRig.position.addScaledVector(dir, (-ay) * speed * delta);
-    xrRig.position.addScaledVector(right, ax * speed * delta);
+    const rightGp = rightController?.userData?.gamepad;
+    if (rightGp && rightGp.axes && rightGp.axes.length >= 2) {
+        // Quest controllers: axes[2,3] are thumbstick
+        const x = rightGp.axes[2] ?? rightGp.axes[0] ?? 0;
+        const y = rightGp.axes[3] ?? rightGp.axes[1] ?? 0;
+        const deadzone = 0.15;
+        const ax = Math.abs(x) > deadzone ? x : 0;
+        const ay = Math.abs(y) > deadzone ? y : 0;
+        
+        if (ax !== 0 || ay !== 0) {
+            // Rotation speed (radians per second)
+            const rotSpeed = 2.0;
+            
+            // Yaw rotation (left/right) - rotate rig around Y axis
+            if (ax !== 0) {
+                const yawDelta = ax * rotSpeed * delta;
+                xrRig.rotateY(-yawDelta); // Negative for intuitive right = turn right
+            }
+            
+            // Pitch rotation (up/down) - tilt view without changing rig
+            // Note: Natural head tracking pitch is preserved; this adds manual adjustment
+            if (ay !== 0) {
+                const pitchDelta = ay * rotSpeed * delta;
+                
+                // Get current pitch from camera's world direction
+                const worldDir = new THREE.Vector3();
+                camera.getWorldDirection(worldDir);
+                const currentPitch = Math.asin(-worldDir.y);
+                const newPitch = currentPitch + pitchDelta;
+                
+                // Clamp pitch to prevent disorientation (±80 degrees)
+                const maxPitch = Math.PI * 0.44; // ~80 degrees
+                if (Math.abs(newPitch) < maxPitch) {
+                    // Rotate camera around its local X axis (pitch)
+                    const axis = new THREE.Vector3(1, 0, 0);
+                    camera.rotateOnAxis(axis, pitchDelta);
+                }
+            }
+        }
+    }
 }
 
 function toggleControls() {

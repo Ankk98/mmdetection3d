@@ -149,9 +149,11 @@ def format_box_info(box_data, label, is_gt=True):
             bbox_3d = box_data.get('bbox_3d', [])
             if len(bbox_3d) >= 7:
                 x, y, z = bbox_3d[0], bbox_3d[1], bbox_3d[2]
-                w, l, h = bbox_3d[3], bbox_3d[4], bbox_3d[5]
+                # LiDAR convention: bbox_3d[3:6] = [length, width, height]
+                l, w, h = bbox_3d[3], bbox_3d[4], bbox_3d[5]
                 yaw = bbox_3d[6]
                 class_name = ['Pedestrian', 'Car'][label]
+                # Display format: [height, width, length] for consistency with KITTI
                 return f"{class_name:12s} | ({x:7.2f}, {y:7.2f}, {z:6.2f}) | [{h:.2f}, {w:.2f}, {l:.2f}] | yaw={yaw:.3f}"
         return "Invalid GT box"
     else:
