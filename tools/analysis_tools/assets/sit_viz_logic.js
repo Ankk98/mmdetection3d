@@ -15,6 +15,87 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
 document.getElementById('container').appendChild(renderer.domElement);
 
+// WebXR (VR)
+// - Desktop usage is unchanged unless you explicitly enter a VR session.
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');
+
+// On-screen XR diagnostics (shows up in the existing info overlay)
+const infoDiv = document.getElementById('info');
+const xrStatusDiv = document.createElement('div');
+xrStatusDiv.style.marginTop = '8px';
+xrStatusDiv.style.fontSize = '12px';
+xrStatusDiv.style.opacity = '0.9';
+xrStatusDiv.innerHTML = '<strong>WebXR:</strong> checking…';
+if (infoDiv) infoDiv.appendChild(xrStatusDiv);
+
+async function updateXRStatus() {
+    if (!('xr' in navigator)) {
+        xrStatusDiv.innerHTML = '<strong>WebXR:</strong> navigator.xr not available (Quest Browser WebXR may be disabled)';
+        return { hasXR: false, immersiveVR: false };
+    }
+    try {
+        const supported = await navigator.xr.isSessionSupported('immersive-vr');
+        xrStatusDiv.innerHTML = `<strong>WebXR:</strong> immersive-vr supported = ${supported ? 'YES' : 'NO'}`;
+        return { hasXR: true, immersiveVR: supported };
+    } catch (e) {
+        xrStatusDiv.innerHTML = `<strong>WebXR:</strong> isSessionSupported error: ${e && e.name ? e.name : 'Error'} ${e && e.message ? e.message : ''}`;
+        return { hasXR: true, immersiveVR: false };
+    }
+}
+
+// Standard VRButton (if available)
+if (typeof VRButton !== 'undefined' && VRButton && VRButton.createButton) {
+    const vrBtn = VRButton.createButton(renderer);
+    document.body.appendChild(vrBtn);
+} else {
+    console.warn("VRButton not available; WebXR button will not be shown.");
+}
+
+// Fallback "Enter VR (debug)" button that directly requests an XR session and
+// prints the exact error if the browser blocks it.
+const debugBtn = document.createElement('button');
+debugBtn.textContent = 'Enter VR (debug)';
+debugBtn.style.position = 'absolute';
+debugBtn.style.left = '10px';
+debugBtn.style.bottom = '10px';
+debugBtn.style.zIndex = '101';
+debugBtn.style.padding = '8px 10px';
+debugBtn.style.borderRadius = '6px';
+debugBtn.style.border = '1px solid rgba(255,255,255,0.4)';
+debugBtn.style.background = 'rgba(0,0,0,0.6)';
+debugBtn.style.color = 'white';
+debugBtn.style.cursor = 'pointer';
+debugBtn.title = 'If this fails, the error text explains why immersive VR is blocked.';
+document.body.appendChild(debugBtn);
+
+debugBtn.addEventListener('click', async () => {
+    const st = await updateXRStatus();
+    if (!st.hasXR) return;
+    try {
+        const sessionInit = {
+            optionalFeatures: [
+                'local-floor',
+                'bounded-floor',
+                'hand-tracking',
+                'layers',
+            ],
+        };
+        const session = await navigator.xr.requestSession('immersive-vr', sessionInit);
+        await renderer.xr.setSession(session);
+        xrStatusDiv.innerHTML = '<strong>WebXR:</strong> XR session started';
+        session.addEventListener('end', () => {
+            xrStatusDiv.innerHTML = '<strong>WebXR:</strong> XR session ended';
+        });
+    } catch (e) {
+        xrStatusDiv.innerHTML = `<strong>WebXR:</strong> requestSession failed: ${e && e.name ? e.name : 'Error'} ${e && e.message ? e.message : ''}`;
+        console.error("requestSession failed", e);
+    }
+});
+
+// Kick off initial status check
+updateXRStatus();
+
 // Lighting
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
 scene.add(ambientLight);
@@ -62,7 +143,6 @@ const numBoxes = Object.keys(boxesData).length;
 console.log("Rendering boxes:", numBoxes, "labels found");
 
 if (numBoxes === 0) {
-    const infoDiv = document.getElementById('info');
     if (infoDiv) {
         const warning = document.createElement('div');
         warning.style.color = '#ffaa00';
@@ -156,6 +236,98 @@ flyControls.autoForward = false;
 flyControls.dragToLook = true;
 flyControls.enabled = false; // Start disabled
 
+// XR rig + controllers
+// We move a "rig" Group for teleport / locomotion (camera pose comes from headset).
+const xrRig = new THREE.Group();
+xrRig.add(camera);
+scene.add(xrRig);
+
+// Simple ground plane (invisible) used for teleport raycasts.
+// Note: Z is up in this viewer, so a plane in XY at z=0 is a "ground" plane.
+const xrGround = new THREE.Mesh(
+    new THREE.PlaneGeometry(2000, 2000),
+    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.0, side: THREE.DoubleSide })
+);
+xrGround.position.set(0, 0, 0);
+scene.add(xrGround);
+
+const raycaster = new THREE.Raycaster();
+const _tmpMatrix = new THREE.Matrix4();
+
+function addXRController(index) {
+    const controller = renderer.xr.getController(index);
+    controller.userData.index = index;
+    controller.userData.isSelecting = false;
+
+    // Ray line (controller forward is -Z in local space)
+    const lineGeom = new THREE.BufferGeometry();
+    lineGeom.setAttribute(
+        'position',
+        new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, -1], 3)
+    );
+    const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff });
+    const line = new THREE.Line(lineGeom, lineMat);
+    line.name = 'xr-ray';
+    line.scale.z = 20; // ray length
+    controller.add(line);
+
+    controller.addEventListener('selectstart', () => { controller.userData.isSelecting = true; });
+    controller.addEventListener('selectend', () => {
+        controller.userData.isSelecting = false;
+
+        // Teleport: cast ray to ground plane and move rig there.
+        const hit = intersectGround(controller);
+        if (hit) {
+            // Move rig to target (keep z at current rig height offset)
+            xrRig.position.x = hit.point.x;
+            xrRig.position.y = hit.point.y;
+            // Keep existing vertical offset to avoid snapping eye height
+        }
+    });
+
+    xrRig.add(controller);
+
+    // Controller grip with model (visual controller)
+    if (typeof XRControllerModelFactory !== 'undefined') {
+        const controllerGrip = renderer.xr.getControllerGrip(index);
+        const factory = new XRControllerModelFactory();
+        controllerGrip.add(factory.createControllerModel(controllerGrip));
+        xrRig.add(controllerGrip);
+    }
+
+    return controller;
+}
+
+function intersectGround(controller) {
+    _tmpMatrix.identity().extractRotation(controller.matrixWorld);
+    raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+    raycaster.ray.direction.set(0, 0, -1).applyMatrix4(_tmpMatrix);
+    const hits = raycaster.intersectObject(xrGround, false);
+    if (hits && hits.length > 0) return hits[0];
+    return null;
+}
+
+const xrController1 = addXRController(0);
+const xrController2 = addXRController(1);
+
+function setDesktopControlsEnabled(enabled) {
+    orbitControls.enabled = enabled;
+    // Fly controls are mutually exclusive with orbit (keep previous mode if needed)
+    if (!enabled) {
+        flyControls.enabled = false;
+        isFlyMode = false;
+    }
+}
+
+renderer.xr.addEventListener('sessionstart', () => {
+    setDesktopControlsEnabled(false);
+    console.log("XR session started");
+});
+renderer.xr.addEventListener('sessionend', () => {
+    setDesktopControlsEnabled(true);
+    console.log("XR session ended");
+});
+
 function toggleControls() {
     isFlyMode = !isFlyMode;
     
@@ -221,18 +393,20 @@ window.addEventListener('keyup', function(event) {
 
 orbitControls.update();
 
-// Animation loop
+// Animation loop (works for both desktop and WebXR)
 function animate() {
-    requestAnimationFrame(animate);
-    
     const delta = clock.getDelta();
-    
-    if (isFlyMode) {
-        flyControls.update(delta);
-    } else {
-        orbitControls.update();
+
+    // Desktop controls only when not in XR
+    if (!renderer.xr.isPresenting) {
+        if (isFlyMode) {
+            flyControls.update(delta);
+        } else {
+            orbitControls.update();
+        }
     }
-    
+
+    // In XR we keep the controller rays visible; teleport is handled on selectend.
     renderer.render(scene, camera);
 }
 
@@ -243,4 +417,4 @@ window.addEventListener('resize', () => {
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-animate();
+renderer.setAnimationLoop(animate);
