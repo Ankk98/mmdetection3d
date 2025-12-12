@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>__TITLE__</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            background: #0f0f0f;
+            color: #f5f5f5;
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+        }
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 200;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            background: rgba(0, 0, 0, 0.65);
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        #frame-controls, #edit-controls {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        button, select {
+            background: #1f1f1f;
+            color: #f5f5f5;
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 4px;
+            padding: 6px 10px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #2b2b2b;
+        }
+        #legend {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.65);
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.1);
+            z-index: 200;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border: 1px solid #fff;
+        }
+        #status {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.65);
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.1);
+            font-size: 12px;
+            z-index: 200;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="hud">
+        <div id="frame-controls">
+            <button id="prev-frame">Prev</button>
+            <button id="next-frame">Next</button>
+            <button id="jump-back">-5</button>
+            <button id="jump-forward">+5</button>
+            <span id="frame-label"></span>
+        </div>
+        <div id="edit-controls">
+            <button id="mode-move">Move</button>
+            <button id="mode-scale">Resize</button>
+            <select id="label-select"></select>
+            <button id="save-label">Apply Label</button>
+            <button id="export-edits">Export</button>
+            <label><input type="checkbox" id="preserve-view" checked /> Preserve view</label>
+        </div>
+        <div id="hints">
+            <div>Click box to select. Arrow keys to move/resize (Shift for larger steps).</div>
+            <div>Keys: [ / ] frame, Shift+[ / ] jump ±5, M move mode, R resize mode, L cycle label.</div>
+            <div>Arrow keys: move/resize selected box. Ctrl+Arrow: Z-axis. WASD: camera (when no selection).</div>
+        </div>
+    </div>
+    <div id="legend"></div>
+    <div id="status">Ready</div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { TransformControls } from 'three/addons/controls/TransformControls.js';
+        import { VRButton } from 'three/addons/webxr/VRButton.js';
+
+        window.THREE = THREE;
+        window.VRButton = VRButton;
+
+        // Data injected by Python script
+        const editorData = __EDITOR_DATA__;
+
+        // Editor logic injected by Python
+        __EDITOR_LOGIC__
+    </script>
+</body>
+</html>
