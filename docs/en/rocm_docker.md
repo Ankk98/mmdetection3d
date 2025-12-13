@@ -12,8 +12,8 @@ for training with appropriate volume mounts and runtime options.
 - A Linux host with:
   - Recent kernel and AMDGPU drivers.
   - ROCm 7.1.1–compatible hardware (for laptop iGPU this will depend on
-    AMD’s ROCm support matrix).
-- Docker installed and configured.
+    AMD's ROCm support matrix).
+- Docker installed and configured (Docker Compose optional but recommended).
 - Access to GPU devices from Docker (typically `/dev/kfd` and `/dev/dri`).
 
 No additional ROCm setup is required on the host beyond having the AMDGPU
@@ -28,22 +28,35 @@ The ROCm-specific Dockerfile lives at:
 
 Key properties:
 
-- Based on an official AMD ROCm PyTorch image, for example:
-  - `rocm/pytorch:rocm7.1.1_ubuntu22.04_py3.10_pytorch_2.5.1`
+- Based on an official AMD ROCm PyTorch image, default:
+  - `rocm/pytorch:rocm7.1.1_ubuntu22.04_py3.10_pytorch_release_2.9.1`
   - See the available tags at
     `https://hub.docker.com/r/rocm/pytorch/tags`.
+- Uses a **multi-stage build**:
+  - Stage 1 (`mmcv-builder`): Builds MMCV from source with ROCm support and
+    caches the wheel file to avoid recompilation on subsequent builds.
+  - Stage 2 (main): Installs dependencies and MMDetection3D.
 - Installs:
-  - System dependencies used by MMDetection3D demos
-    (`ffmpeg`, `libsm6`, `libxext6`, `git`, `ninja-build`,
-     `libglib2.0-0`, `libxrender-dev`).
-  - `openmim`, then `mmengine`, `mmcv>=2.0.0rc4`, `mmdet>=3.0.0`
-    using `mim install`.
-  - The local `mmdetection3d` repository in editable mode plus
-    all dependencies from `requirements.txt`.
+  - System dependencies:
+    - MMDetection3D demo dependencies (`ffmpeg`, `libsm6`, `libxext6`,
+      `libglib2.0-0`, `libxrender-dev`).
+    - Build tools (`git`, `ninja-build`, `build-essential`, `cmake`).
+    - Utilities (`xvfb` for headless GUI, `screen`, `vim`).
+  - Python packages:
+    - `mmengine` (pure Python).
+    - `mmcv` (built from source with ROCm support in the builder stage).
+    - `mmdet>=3.0.0,<3.3.0`.
+    - MMDetection3D dependencies (`numpy<2.0`, `open3d`, `nuscenes-devkit`,
+      `jupyterlab`, `notebook`, `tensorboard`, etc.).
+    - The local `mmdetection3d` repository in editable mode.
+- Includes an entrypoint script (`docker/docker-entrypoint-rocm.sh`) that
+  automatically runs environment verification on container startup (unless
+  `SKIP_VERIFY=1` is set).
 
 The container does **not** build any CUDA/ROCm extensions in this repo,
 because `setup.py` currently defines `ext_modules=[]`. Low-level kernels
-remain in MMCV/MMDetection, which are installed from prebuilt wheels.
+remain in MMCV/MMDetection, which are built from source with ROCm support
+during the Docker build process.
 
 ### 3. Building the image
 
@@ -53,11 +66,18 @@ From the repository root:
 docker build -f docker/Dockerfile.rocm -t mmdet3d-rocm .
 ```
 
+The build uses a multi-stage process:
+1. First stage builds MMCV from source with ROCm support and caches the wheel.
+2. Second stage installs all dependencies and MMDetection3D.
+
+**Note**: The first build may take longer as it compiles MMCV. Subsequent builds
+will reuse the cached MMCV wheel unless the MMCV version changes.
+
 If you want to pin a specific ROCm PyTorch tag, override the build arg:
 
 ```bash
 docker build \
-  --build-arg ROCM_TAG=rocm7.1.1_ubuntu22.04_py3.10_pytorch_2.5.1 \
+  --build-arg ROCM_TAG=rocm7.1.1_ubuntu22.04_py3.10_pytorch_release_2.9.1 \
   -f docker/Dockerfile.rocm \
   -t mmdet3d-rocm .
 ```
@@ -65,7 +85,37 @@ docker build \
 Refer to the tag list on `https://hub.docker.com/r/rocm/pytorch/tags`
 for valid values.
 
-### 4. Runtime: exposing AMD GPUs to the container
+### 4. Running the container
+
+#### Option A: Using Docker Compose (Recommended)
+
+A `docker-compose.rocm.yml` file is provided for convenient setup:
+
+```bash
+docker-compose -f docker-compose.rocm.yml up -d
+```
+
+This configuration:
+- Automatically exposes GPU devices (`/dev/kfd`, `/dev/dri`).
+- Adds the container to the `video` group.
+- Mounts the project directory, data, checkpoints, and work directories.
+- Sets up environment variables (ROCm paths, HIP platform, etc.).
+- Exposes ports for Jupyter (8889) and Open3D WebRTC (8888).
+- Runs environment verification on startup (unless `SKIP_VERIFY=1`).
+
+To enter the container:
+
+```bash
+docker-compose -f docker-compose.rocm.yml exec mmdet3d-rocm bash
+```
+
+To stop the container:
+
+```bash
+docker-compose -f docker-compose.rocm.yml down
+```
+
+#### Option B: Using Docker run
 
 On a host with AMD GPUs and ROCm-capable drivers, you typically need to
 expose:
@@ -79,13 +129,17 @@ has permission to use those devices).
 Example:
 
 ```bash
-docker run --rm \
+docker run --rm -it \
   --device=/dev/kfd \
   --device=/dev/dri \
   --group-add video \
   --ipc=host \
+  -v $(pwd):/workspace/mmdetection3d \
+  -v $(pwd)/data:/workspace/mmdetection3d/data \
+  -v $(pwd)/checkpoints:/workspace/mmdetection3d/checkpoints \
+  -w /workspace/mmdetection3d \
   mmdet3d-rocm \
-  python -c "import torch; print(torch.cuda.is_available(), getattr(torch.version, 'hip', None))"
+  bash
 ```
 
 On a Fedora laptop with an AMD iGPU, this is often sufficient as long
@@ -97,9 +151,43 @@ as:
 
 If you encounter permission issues, you may need additional Docker
 options (e.g. `--security-opt seccomp=unconfined`) as recommended by
-AMD’s ROCm container documentation.
+AMD's ROCm container documentation.
 
-### 5. GPU accessibility test script
+**Note**: The entrypoint script automatically runs environment verification
+on startup. To skip verification, set `SKIP_VERIFY=1` in the environment.
+
+### 5. Environment verification
+
+The container includes a comprehensive environment verification script that
+checks:
+
+- Python version and environment variables.
+- PyTorch and ROCm/HIP support.
+- MMDetection3D dependencies (mmcv, mmengine, mmdet, mmdet3d).
+- Open3D and other key packages.
+- System tools availability.
+
+The verification script runs automatically on container startup via the
+entrypoint script. You can also run it manually:
+
+```bash
+python tools/verify_rocm_env.py
+```
+
+To skip automatic verification on startup, set `SKIP_VERIFY=1`:
+
+```bash
+docker run -e SKIP_VERIFY=1 ... mmdet3d-rocm
+```
+
+or in `docker-compose.rocm.yml`:
+
+```yaml
+environment:
+  - SKIP_VERIFY=1
+```
+
+### 6. GPU accessibility test script
 
 To quickly verify that the container can see your AMD GPU through ROCm,
 a helper script is provided:
@@ -124,7 +212,7 @@ If this script reports no CUDA/HIP devices, double-check:
 - That `/dev/kfd` and `/dev/dri` are passed to the container.
 - That your user has permissions to use those devices.
 
-### 6. Inference test script
+### 7. Inference test script
 
 To verify a full inference path with MMDetection3D, a simple CLI wrapper
 around the high-level APIs is provided:
@@ -159,7 +247,7 @@ On a Fedora laptop with an AMD iGPU, you can use a small test sample
 from any supported dataset (e.g. KITTI, nuScenes) copied into a local
 directory and mounted into the container via `-v`.
 
-### 7. Known limitations and caveats
+### 8. Known limitations and caveats
 
 - ROCm support depends on your specific AMD GPU/iGPU and driver stack.
 - Some MMCV/MMDetection custom CUDA kernels may not have ROCm-optimized
