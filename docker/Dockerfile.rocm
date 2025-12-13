@@ -3,17 +3,27 @@ ARG ROCM_TAG=rocm7.1.1_ubuntu22.04_py3.10_pytorch_release_2.9.1
 
 ######################################################################
 # Stage 1: build mmcv wheel once (cached) to avoid recompiling each build
+# This stage builds mmcv with ROCm support and caches the wheel file
+# The wheel is reused in the main stage, avoiding expensive recompilation
 ######################################################################
+# Use ROCm PyTorch base image as builder stage - contains PyTorch with ROCm support
 FROM rocm/pytorch:${ROCM_TAG} AS mmcv-builder
 
 ENV PYTHONUNBUFFERED=1 \
+    # Disable pip cache to reduce image size
     PIP_NO_CACHE_DIR=1 \
+    # ROCm installation path - required for building mmcv with ROCm support
     ROCM_HOME=/opt/rocm \
+    # Add ROCm binaries to PATH - ensures HIP compiler and tools are accessible
     PATH=$PATH:/opt/rocm/bin:/opt/rocm/hip/bin \
+    # Specify AMD platform for HIP - tells HIP to use AMD GPUs, not NVIDIA
     HIP_PLATFORM=amd \
+    # Force CUDA API usage - mmcv expects CUDA API which ROCm provides compatibility for
     FORCE_CUDA=1
 
+# Install build dependencies needed to compile mmcv from source
 RUN apt-get update && \
+    # Non-interactive mode prevents prompts during package installation
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     git \
     ninja-build \
@@ -21,7 +31,9 @@ RUN apt-get update && \
     cmake \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Upgrade pip and install wheel - wheel package is needed for building Python wheels
 RUN pip install --no-cache-dir --upgrade pip wheel
+# Install numpy<2.0 and mmengine - numpy is a dependency for mmcv build, mmengine is required by mmcv
 RUN pip install --no-cache-dir "numpy<2.0" mmengine
 
 # Build and cache mmcv wheel; this layer is reused unless mmcv version changes
@@ -31,16 +43,25 @@ RUN pip wheel --no-cache-dir --no-build-isolation \
 
 ######################################################################
 # Stage 2: main runtime image
+# This is the final image that will be used at runtime
+# It installs all dependencies and MMDetection3D
 ######################################################################
+# Start from ROCm PyTorch base image - provides PyTorch with ROCm/HIP support
 FROM rocm/pytorch:${ROCM_TAG}
 
 # Environment variables for ROCm detection and build
 ENV PYTHONUNBUFFERED=1 \
+    # Disable pip cache to reduce image size
     PIP_NO_CACHE_DIR=1 \
+    # ROCm installation path - required for runtime ROCm operations
     ROCM_HOME=/opt/rocm \
+    # Add ROCm binaries to PATH - ensures HIP runtime and tools are accessible
     PATH=$PATH:/opt/rocm/bin:/opt/rocm/hip/bin \
+    # Specify AMD platform for HIP - tells HIP runtime to use AMD GPUs
     HIP_PLATFORM=amd \
+    # Force CUDA API usage - required for mmcv which uses CUDA API (ROCm provides compatibility)
     FORCE_CUDA=1 \
+    # Add MMDetection3D to Python path - allows importing mmdet3d modules
     PYTHONPATH=/mmdetection3d:$PYTHONPATH
 
 # Install system dependencies required by MMDetection3D
@@ -55,17 +76,7 @@ RUN apt-get update && \
     ninja-build \
     libglib2.0-0 \
     libxrender-dev \
-    # Mesa EGL/OpenGL + Vulkan drivers for headless/GPU rendering (fastplotlib/wgpu)
-    libegl1-mesa \
-    libgl1-mesa-glx \
-    libgles2-mesa \
-    mesa-vulkan-drivers \
-    vulkan-tools \
-    libvulkan1 \
-    vulkan-validationlayers \
-    mesa-utils \
-    # Xvfb (X Virtual Framebuffer) for headless GUI applications
-    # Use with: xvfb-run -a python ... --web ...
+    # Xvfb - virtual X server for running GUI apps without display (headless mode)
     xvfb \
     # Additional build dependencies for compiling mmcv from source
     build-essential \
@@ -125,11 +136,6 @@ RUN pip install --no-cache-dir \
     jupyterlab \
     notebook \
     ipykernel \
-    # WebGPU/Vulkan stack for interactive visualization
-    "fastplotlib>=0.1.0" \
-    "pygfx>=0.3.0" \
-    "wgpu>=0.16.0" \
-    "ipywidgets>=8.0.0" \
     plyfile \
     scikit-image \
     tensorboard \
