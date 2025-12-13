@@ -1,17 +1,74 @@
+# syntax=docker/dockerfile:1.4
 ARG ROCM_TAG=rocm7.1.1_ubuntu22.04_py3.10_pytorch_release_2.9.1
 
-# Base image:
-#   - Provided by AMD: see https://hub.docker.com/r/rocm/pytorch/tags
-#   - Includes ROCm 7.1.1 stack, PyTorch with ROCm backend, Python 3.10, Ubuntu 22.04
-FROM rocm/pytorch:${ROCM_TAG}
+######################################################################
+# Stage 1: build mmcv wheel once (cached) to avoid recompiling each build
+# This stage builds mmcv with ROCm support and caches the wheel file
+# The wheel is reused in the main stage, avoiding expensive recompilation
+######################################################################
+# Use ROCm PyTorch base image as builder stage - contains PyTorch with ROCm support
+FROM rocm/pytorch:${ROCM_TAG} AS mmcv-builder
 
 ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    # Disable pip cache to reduce image size
+    PIP_NO_CACHE_DIR=1 \
+    # ROCm installation path - required for building mmcv with ROCm support
+    ROCM_HOME=/opt/rocm \
+    # Add ROCm binaries to PATH - ensures HIP compiler and tools are accessible
+    PATH=$PATH:/opt/rocm/bin:/opt/rocm/hip/bin \
+    # Specify AMD platform for HIP - tells HIP to use AMD GPUs, not NVIDIA
+    HIP_PLATFORM=amd \
+    # Force CUDA API usage - mmcv expects CUDA API which ROCm provides compatibility for
+    FORCE_CUDA=1
 
-# Install system dependencies required by MMDetection3D and its demos.
-# These mirror the original CUDA-based Dockerfile where possible.
-RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+# Install build dependencies needed to compile mmcv from source
+RUN apt-get update && \
+    # Non-interactive mode prevents prompts during package installation
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    git \
+    ninja-build \
+    build-essential \
+    cmake \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip and install wheel - wheel package is needed for building Python wheels
+RUN pip install --no-cache-dir --upgrade pip wheel
+# Install numpy<2.0 and mmengine - numpy is a dependency for mmcv build, mmengine is required by mmcv
+RUN pip install --no-cache-dir "numpy<2.0" mmengine
+
+# Build and cache mmcv wheel; this layer is reused unless mmcv version changes
+RUN pip wheel --no-cache-dir --no-build-isolation \
+    "git+https://github.com/open-mmlab/mmcv.git@v2.1.0" \
+    -w /tmp/wheels
+
+######################################################################
+# Stage 2: main runtime image
+# This is the final image that will be used at runtime
+# It installs all dependencies and MMDetection3D
+######################################################################
+# Start from ROCm PyTorch base image - provides PyTorch with ROCm/HIP support
+FROM rocm/pytorch:${ROCM_TAG}
+
+# Environment variables for ROCm detection and build
+ENV PYTHONUNBUFFERED=1 \
+    # Disable pip cache to reduce image size
+    PIP_NO_CACHE_DIR=1 \
+    # ROCm installation path - required for runtime ROCm operations
+    ROCM_HOME=/opt/rocm \
+    # Add ROCm binaries to PATH - ensures HIP runtime and tools are accessible
+    PATH=$PATH:/opt/rocm/bin:/opt/rocm/hip/bin \
+    # Specify AMD platform for HIP - tells HIP runtime to use AMD GPUs
+    HIP_PLATFORM=amd \
+    # Force CUDA API usage - required for mmcv which uses CUDA API (ROCm provides compatibility)
+    FORCE_CUDA=1 \
+    # Add MMDetection3D to Python path - allows importing mmdet3d modules
+    PYTHONPATH=/mmdetection3d:$PYTHONPATH
+
+# Install system dependencies required by MMDetection3D
+# Includes build tools needed for compiling mmcv from source
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    # Existing dependencies for demos and visualization
     ffmpeg \
     libsm6 \
     libxext6 \
@@ -19,51 +76,121 @@ RUN apt-get update \
     ninja-build \
     libglib2.0-0 \
     libxrender-dev \
- && apt-get clean \
- && rm -rf /var/lib/apt/lists/*
+    # Xvfb - virtual X server for running GUI apps without display (headless mode)
+    xvfb \
+    # Additional build dependencies for compiling mmcv from source
+    build-essential \
+    cmake \
+    # Screen for session management
+    screen \
+    # Text editors
+    vim \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install OpenMMLab core libs on top of ROCm-enabled PyTorch.
-# We rely on API compatibility between CUDA and ROCm in PyTorch and MM*.
-RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir openmim \
- && mim install "mmengine" "mmcv>=2.0.0rc4" "mmdet>=3.0.0"
+# Upgrade pip and install wheel (required for building packages)
+RUN pip install --no-cache-dir --upgrade pip wheel
 
-# Copy local MMDetection3D repo into the image so local edits are respected.
+# Install numpy<2.0 first to avoid compatibility issues
+# Many packages (matplotlib, scikit-image, etc.) were compiled against NumPy 1.x
+# and are not compatible with NumPy 2.x
+RUN pip install --no-cache-dir "numpy<2.0"
+
+# Install mmengine (pure Python, no CUDA/ROCm dependency)
+RUN pip install --no-cache-dir mmengine
+
+# Install mmcv from cached wheel built in the mmcv-builder stage
+COPY --from=mmcv-builder /tmp/wheels /tmp/wheels
+RUN pip install --no-cache-dir --no-deps /tmp/wheels/mmcv-*.whl
+
+# Verify mmcv was built with ROCm support
+# This will show HIP compiler info if successful, or NVCC if it failed
+RUN python -c "import mmcv; \
+    print('mmcv version:', mmcv.__version__); \
+    from mmcv.utils.env import collect_env; \
+    env = collect_env(); \
+    print('MMCV CUDA Compiler:', env.get('MMCV CUDA Compiler', 'N/A')); \
+    print('CUDA_HOME:', env.get('CUDA_HOME', 'N/A'))"
+
+# Install mmdet (can use wheel since it doesn't have CUDA code directly)
+# It depends on mmcv which we just built with ROCm support
+RUN pip install --no-cache-dir "mmdet>=3.0.0,<3.3.0"
+
+# Copy MMDetection3D source into container
+# Note: At runtime, docker-compose mounts to /workspace/mmdetection3d
 WORKDIR /mmdetection3d
 COPY . /mmdetection3d
 
-# Install MMDetection3D and its runtime dependencies.
-# Note:
-#   - setup.py imports `torch`, so we disable build isolation to ensure it can
-#     see the ROCm PyTorch already present in the base image.
-#   - The build backend expects `bdist_wheel`, so we install `wheel` first.
-# We install the package in non-editable mode inside the image; if you need
-# editable installs, do that on the host or in a dev container.
-# setup.py already wires install_requires to requirements/runtime.txt.
-# We intentionally do NOT install `requirements.txt` here because it pulls in
-# optional extras such as Waymo TF dependencies (waymo-open-dataset-tf-*),
-# which are not available for this environment and are not needed for
-# typical ROCm inference use cases.
-RUN pip install --no-cache-dir wheel \
- && pip install --no-cache-dir --no-build-isolation .
+# Install runtime dependencies BEFORE installing MMDetection3D
+# This ensures correct versions (especially numpy<2.0) are installed first
+# Note: open3d will be CPU-only (no ROCm support), which is acceptable
+# Most other packages are pure Python or don't require GPU acceleration
+# Pin numpy<2.0 to avoid compatibility issues with packages compiled against NumPy 1.x
+RUN pip install --no-cache-dir \
+    lyft_dataset_sdk \
+    "networkx>=2.5" \
+    numba \
+    "numpy<2.0" \
+    nuscenes-devkit \
+    open3d \
+    jupyterlab \
+    notebook \
+    ipykernel \
+    plyfile \
+    scikit-image \
+    tensorboard \
+    trimesh \
+    gdown
 
-# Simple smoke test (optional; kept as a comment to avoid slowing builds):
-#   docker run --rm --device=/dev/kfd --device=/dev/dri \
-#     --group-add video --ipc=host <image> \
-#     python -c "import torch; print(torch.cuda.is_available(), torch.version.hip)"
-#
-# Runtime notes for ROCm on AMD GPUs (host assumptions):
-#   - Host has recent Linux kernel and AMDGPU/ROCm 7.1.1-compatible drivers.
-#   - Typical run example:
-#       docker run --rm \
-#         --device=/dev/kfd \
-#         --device=/dev/dri \
-#         --group-add video \
-#         --ipc=host \
-#         -v /path/to/data:/data \
-#         <image> \
-#         python tools/test.py ...
+# Install MMDetection3D in editable mode
+# --no-build-isolation ensures setup.py can see ROCm PyTorch
+# Runtime dependencies are already installed above, so this will skip them
+RUN pip install --no-cache-dir --no-build-isolation -e .
 
+# Final verification: Check PyTorch ROCm support and GPU availability
+# Note: GPU devices won't be available during build, only at runtime
+RUN python -c "import torch; print('PyTorch:', torch.__version__); print('HIP:', getattr(torch.version, 'hip', 'N/A')); print('CUDA available:', torch.cuda.is_available())"
+
+# Copy and set up entrypoint script
+COPY docker/docker-entrypoint-rocm.sh /usr/local/bin/docker-entrypoint-rocm.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint-rocm.sh
+
+# Set working directory
+# Note: docker-compose will override this to /workspace/mmdetection3d at runtime
+WORKDIR /mmdetection3d
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint-rocm.sh"]
 CMD ["/bin/bash"]
 
+# Runtime notes:
+# To run with GPU access:
+#   docker run --rm \
+#     --device=/dev/kfd \
+#     --device=/dev/dri \
+#     --group-add video \
+#     --ipc=host \
+#     -v /path/to/data:/data \
+#     mmdet3d-rocm \
+#     python tools/test_rocm_inference.py \
+#       --config configs/second/hv_second_secfpn_4x8_80e_kitti-3d-3class.py \
+#       --checkpoint /data/checkpoint.pth \
+#       --pcd /data/sample.bin
+#
+# To verify GPU access:
+#   docker run --rm \
+#     --device=/dev/kfd \
+#     --device=/dev/dri \
+#     --group-add video \
+#     --ipc=host \
+#     mmdet3d-rocm \
+#     python tools/check_rocm_gpu.py
+#
+# To verify environment setup:
+#   docker run --rm \
+#     --device=/dev/kfd \
+#     --device=/dev/dri \
+#     --group-add video \
+#     --ipc=host \
+#     mmdet3d-rocm \
+#     python tools/verify_rocm_env.py
 

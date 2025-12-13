@@ -1,0 +1,70 @@
+services:
+  mmdet3d-rocm:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.rocm
+    image: mmdet3d-rocm:latest
+    container_name: mmdet3d-rocm
+    # ROCm device access - passthrough GPU devices from host to container
+    devices:
+      # Kernel Fusion Driver - required for ROCm to communicate with AMD GPUs
+      - /dev/kfd
+      # Direct Rendering Infrastructure - provides direct access to GPU for rendering/compute
+      - /dev/dri
+    # Add video group for GPU access
+    group_add:
+      # Video group membership required for /dev/dri device access
+      - video
+    # Shared memory for IPC (needed for ROCm) - share IPC namespace with host for ROCm inter-process communication
+    ipc: host
+    environment:
+      # Disable Python output buffering - ensures logs appear immediately (useful for debugging)
+      - PYTHONUNBUFFERED=1
+      # Force CUDA API usage - required because mmcv uses CUDA API which ROCm provides compatibility for
+      - FORCE_CUDA=1
+      # ROCm installation path - tells libraries where to find ROCm installation
+      - ROCM_HOME=/opt/rocm
+      # HIP platform specification - tells HIP runtime to use AMD platform (not NVIDIA)
+      - HIP_PLATFORM=amd
+      # Default Jupyter port (change when launching if needed) - port for Jupyter notebook server
+      - JUPYTER_PORT=8889
+      # Python path for MMDetection3D - ensures Python can import mmdet3d modules
+      - PYTHONPATH=/workspace/mmdetection3d:${PYTHONPATH:-}
+      # X11 forwarding for GUI applications (optional) - enables GUI apps to display on host X server
+      - DISPLAY=${DISPLAY:-:0}
+      # Open3D WebRTC server port - port for Open3D's web-based 3D visualization server
+      - O3D_WEBRTC_PORT=8888
+      # Set SKIP_VERIFY=1 to skip automatic environment verification on startup - optional flag to bypass verification checks
+      - SKIP_VERIFY=${SKIP_VERIFY:-}
+    volumes:
+      # Mount the entire project directory
+      - .:/workspace/mmdetection3d:rw
+      # Host firmware so Mesa/RADV sees RDNA GPUs inside container - GPU firmware needed for proper GPU initialization
+      - /lib/firmware:/lib/firmware:ro
+      # Mount data directory
+      - "./data:/workspace/mmdetection3d/data:rw"
+      # Mount raw_data directory (read-only)
+      - "./raw_data:/workspace/mmdetection3d/raw_data:ro"
+      # Mount checkpoints directory
+      - ./checkpoints:/workspace/mmdetection3d/checkpoints:rw
+      # Mount work_dirs for training outputs
+      - ./work_dirs:/workspace/mmdetection3d/work_dirs:rw
+      # X11 socket for GUI forwarding (optional) - enables GUI applications to connect to host X server
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    working_dir: /workspace/mmdetection3d
+    # Shared memory size - increases /dev/shm size (default 64MB) for PyTorch DataLoader multiprocessing
+    shm_size: 8g
+    ports:
+      - "8888:8888"   # Open3D WebRTC visualization server
+      - "8889:8889"   # Jupyter notebook server
+      - "8890:8890"   # Reserved for future use
+      - "8891:8891"   # Reserved for future use
+      - "8892:8892"   # Reserved for future use
+    # Keep container running for interactive use - enables interactive terminal sessions
+    stdin_open: true
+    # Allocate pseudo-TTY - enables terminal features like colors and interactive prompts
+    tty: true
+    # Restart policy (optional) - automatically restart container if it stops (unless manually stopped)
+    restart: unless-stopped
+    # Default command (can be overridden)
+    command: /bin/bash
