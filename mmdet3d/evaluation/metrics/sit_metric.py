@@ -667,8 +667,8 @@ class SitMetric(BaseMetric):
                         logger.info(f'  GT labels sample: {gt_labels[:5] if len(gt_labels) > 0 else "empty"}')
                         logger.info(f'  DT labels sample: {dt_labels[:5] if len(dt_labels) > 0 else "empty"}')
                     
-                    gt_mask = (gt_labels == cls_name)
-                    dt_mask = (dt_labels == cls_name)
+                    gt_mask = (gt_labels == cls_name) if len(gt_labels) > 0 else np.array([], dtype=bool)
+                    dt_mask = (dt_labels == cls_name) if len(dt_labels) > 0 else np.array([], dtype=bool)
                     
                     if i == 0 and cls_idx == 0:
                         logger.info(f'  GT mask matches: {gt_mask.sum()}/{len(gt_labels)}')
