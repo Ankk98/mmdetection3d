@@ -501,11 +501,13 @@ class SitMetric(BaseMetric):
                 if i == 0 and len(gt_anno['location']) > 0:
                     logger.info(f'=== DIAGNOSTICS: GT Box Format (sample {i}) ===')
                     logger.info(f'  Location sample: {gt_anno["location"][0]}')
-                    logger.info(f'  Dimensions sample: {gt_anno["dimensions"][0]}')
+                    logger.info(f'  Dimensions sample (l,w,h from pkl): {gt_anno["dimensions"][0]}')
                     logger.info(f'  Rotation_y sample: {gt_anno["rotation_y"][0]}')
                 
                 # Ensure rotation_y is at least 1D, then reshape to column vector
                 rotation_y_gt = np.atleast_1d(gt_anno['rotation_y']).reshape(-1, 1)
+                # GT dimensions from pkl are already in LiDAR format [l, w, h] = [dx, dy, dz]
+                # (converted by convert_annos_to_kitti_annos from bbox_3d[3:6])
                 gt_boxes_tensor = torch.from_numpy(
                     np.concatenate([
                         gt_anno['location'],
@@ -528,11 +530,13 @@ class SitMetric(BaseMetric):
                 if i == 0 and len(dt_anno['location']) > 0:
                     logger.info(f'=== DIAGNOSTICS: DT Box Format (sample {i}) ===')
                     logger.info(f'  Location sample: {dt_anno["location"][0]}')
-                    logger.info(f'  Dimensions sample: {dt_anno["dimensions"][0]}')
+                    logger.info(f'  Dimensions sample (l,w,h from model): {dt_anno["dimensions"][0]}')
                     logger.info(f'  Rotation_y sample: {dt_anno["rotation_y"][0]}')
                 
                 # Ensure rotation_y is at least 1D, then reshape to column vector
                 rotation_y_dt = np.atleast_1d(dt_anno['rotation_y']).reshape(-1, 1)
+                # Predictions from model are already in LiDAR format [dx, dy, dz] = [l, w, h]
+                # No reordering needed for predictions
                 dt_boxes_tensor = torch.from_numpy(
                     np.concatenate([
                         dt_anno['location'],

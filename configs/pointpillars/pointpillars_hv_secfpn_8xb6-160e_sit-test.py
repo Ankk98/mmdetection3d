@@ -111,17 +111,23 @@ val_dataloader = dict(
         backend_args=backend_args))
 
 # Model settings for SiT dataset
+# NOTE: Anchor Z range must span the full point_cloud_range Z extent [-5, 3].
+# The official SiT implementation (https://github.com/spalaboratory/SiT-Dataset)
+# uses ranges=[[-40, -40, -5.0, 40, 40, 3.0]] for anchors. Using a fixed Z value
+# (e.g., -0.6) causes anchor-GT mismatch during training because SiT GT boxes
+# have Z values distributed across the full range (mean ~0, range -1.5 to +1.6).
+# This mismatch leads to poor regression and low mAP.
 model = dict(
     bbox_head=dict(
         num_classes=2,  # Pedestrian, Car
         anchor_generator=dict(
             ranges=[
-                [-50, -50, -0.6, 50, 50, -0.6],  # Pedestrian range
-                [-50, -50, -0.6, 50, 50, -0.6],  # Car range
+                [-50, -50, -5, 50, 50, 3],  # Pedestrian: full Z range matching point_cloud_range
+                [-50, -50, -5, 50, 50, 3],  # Car: full Z range matching point_cloud_range
             ],
             sizes=[
-                [0.8, 0.6, 1.73],  # Pedestrian (adjusted for SiT)
-                [1.76, 0.6, 1.73], # Car (adjusted for SiT)
+                [0.8, 0.6, 1.73],  # Pedestrian (l, w, h) - typical pedestrian dimensions
+                [1.76, 0.6, 1.73], # Car (l, w, h) - adjusted for SiT vehicle sizes
             ],
         ),
     ),
