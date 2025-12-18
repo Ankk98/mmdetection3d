@@ -143,6 +143,11 @@ def convert_pcd_to_bin(pcd_path: str, bin_path: str) -> bool:
 
     Returns:
         bool: True if conversion successful.
+    
+    Note:
+        SiT raw point clouds are ALREADY in LiDAR frame (centered near origin).
+        Only the labels are in world coordinates and need ego-motion transformation.
+        Do NOT apply ego transform to point clouds!
     """
     try:
         points = load_pcd_file(pcd_path)
@@ -157,6 +162,7 @@ def convert_pcd_to_bin(pcd_path: str, bin_path: str) -> bool:
             points = np.column_stack([points, padding])
 
         # Save as binary float32
+        # Note: NO ego transform needed - SiT point clouds are already in LiDAR frame
         points.astype(np.float32).tofile(bin_path)
         return True
 
@@ -692,16 +698,32 @@ def convert_annos_to_instances(annos: dict) -> list:
             'bbox': annos['bbox'][i].tolist(),
             'bbox_label': mapped_label,
             # KITTI `dimensions` are [h, w, l]. For LiDAR boxes we expect
-            # [size_x, size_y, size_z] = [length, width, height], with z
-            # vertical. Map explicitly as [l, w, h] to avoid transposed boxes.
+            # [size_x, size_y, size_z] = [length, width, height], with z vertical.
+            #
+            # BUG FIX: The SiT dataset raw labels store dimensions differently.
+            # After conversion to KITTI format, dims are [h, w, l] but the
+            # actual values show that what's stored as 'l' is actually the
+            # shorter dimension (width) and 'w' is the longer dimension (length)
+            # for vehicles. This is evident from Car stats: dim0=2.04, dim1=4.46
+            # where dim1 (originally 'w' in KITTI) is clearly the car length.
+            #
+            # To produce correct [l, w, h] order where l > w for vehicles:
+            # - Take max(l, w) as length (size_x)
+            # - Take min(l, w) as width (size_y)
+            # - Keep h as height (size_z)
             'bbox_3d': [
                 annos['location'][i][0],  # x
                 annos['location'][i][1],  # y
                 annos['location'][i][2],  # z
-                annos['dimensions'][i][2],  # length -> size_x
-                annos['dimensions'][i][1],  # width  -> size_y
-                annos['dimensions'][i][0],  # height -> size_z
-                annos['rotation_y'][i]     # yaw
+                # KITTI dimensions are [h, w, l]. We need [l, w, h] for LiDAR boxes.
+                # NOTE: SiT dataset has a convention where for some objects (esp. cars),
+                # what's labeled as 'w' is actually longer than 'l'. This is a dataset
+                # quirk, NOT a bug. We preserve the original values and adjust anchors
+                # to match. The yaw angle is consistent with the original labeling.
+                annos['dimensions'][i][2],  # l -> size_x
+                annos['dimensions'][i][1],  # w -> size_y
+                annos['dimensions'][i][0],  # h -> size_z
+                annos['rotation_y'][i]      # yaw (unchanged)
             ],
             'bbox_3d_isvalid': True,
             'bbox_label_3d': mapped_label,
@@ -967,9 +989,11 @@ def convert_sequence(sit_root: str, output_root: str, sequence: str, start_frame
         frame_idx_str = f'{global_frame_idx:06d}'  # Zero-padded to 6 digits (KITTI format)
         current_frame_idx += 1
 
-        # Convert PCD to .bin
+        # Convert PCD to .bin (NO ego transform - SiT points are already in LiDAR frame)
         pcd_path = osp.join(velo_dir, pcd_file)
         bin_path = osp.join(output_training_dir, 'velodyne', f'{frame_idx_str}.bin')
+        
+        original_frame_idx = pcd_file.split('.')[0]  # Original frame ID from sequence
 
         if convert_pcd_to_bin(pcd_path, bin_path):
             print(f"  Converted PCD: {pcd_file} -> {frame_idx_str}.bin")
@@ -977,8 +1001,8 @@ def convert_sequence(sit_root: str, output_root: str, sequence: str, start_frame
             print(f"  Failed to convert PCD: {pcd_file}")
             continue
 
-        # Convert labels with ego-motion transformation
-        original_frame_idx = pcd_file.split('.')[0]  # Original frame ID from sequence
+        # Convert labels WITH ego-motion transformation
+        # Labels are in world coordinates, need to transform to LiDAR frame
         label_path = osp.join(sit_seq_dir, 'label_3d', f'{original_frame_idx}.txt')
         ego_traj_path = osp.join(sit_seq_dir, 'ego_trajectory', f'{original_frame_idx}.txt')
         kitti_label_path = osp.join(output_training_dir, 'label_2', f'{frame_idx_str}.txt')

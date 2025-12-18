@@ -143,8 +143,18 @@ class Det3DDataset(BaseDataset):
 
             # show statistics of this dataset
             print_log('-' * 30, 'current')
+            # Determine dataset type from ann_file name
+            ann_file_lower = ann_file.lower()
+            if 'train' in ann_file_lower:
+                dataset_type = 'training'
+            elif 'val' in ann_file_lower:
+                dataset_type = 'validation'
+            elif 'test' in ann_file_lower or self.test_mode:
+                dataset_type = 'test'
+            else:
+                dataset_type = 'test' if self.test_mode else 'training'
             print_log(
-                f'The length of {"test" if self.test_mode else "training"} dataset: {len(self)}',  # noqa: E501
+                f'The length of {dataset_type} dataset: {len(self)}',
                 'current')
             content_show = [['category', 'number']]
             for label, num in enumerate(self.num_ins_per_cat):
