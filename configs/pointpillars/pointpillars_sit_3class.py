@@ -204,8 +204,8 @@ model = dict(
                 [-50, -50, -5, 50, 50, 3],  # Car: full Z range matching point_cloud_range
             ],
             sizes=[
-                [0.8, 0.6, 1.73],  # Pedestrian (l, w, h) - typical pedestrian dimensions
-                [4.5, 2.03, 1.74],  # Car (l, w, h) - adjusted for SiT vehicle sizes
+                [0.73, 0.78, 1.60],  # Pedestrian (l, w, h) - from SiT dataset statistics
+                [2.04, 4.46, 1.76],  # Car (l, w, h) - from SiT dataset statistics
             ],
         ),
     ),
