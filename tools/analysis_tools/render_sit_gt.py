@@ -21,7 +21,7 @@ import json
 import os
 import webbrowser
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 
 import mmengine
 import numpy as np
@@ -104,12 +104,35 @@ def _compute_scene_range(points: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return points.min(axis=0), points.max(axis=0)
 
 
+def _build_editor_frame(
+    frame_id: int,
+    pts: np.ndarray,
+    raw_boxes: List[Dict],
+) -> Dict:
+    """Prepare per-frame payload for the editor."""
+    pmin, pmax = _compute_scene_range(pts)
+    center = ((pmin + pmax) / 2.0).tolist()
+    size = (pmax - pmin).tolist()
+    max_dim = max(size)
+    camera_distance = max_dim * 2.0 if max_dim > 0 else 10.0
+
+    return {
+        "frameId": int(frame_id),
+        "points": pts.astype(np.float32).flatten().tolist(),
+        "boxes": raw_boxes,
+        "center": center,
+        "cameraDistance": camera_distance,
+    }
+
+
 def _generate_html(
     pts: np.ndarray,
     boxes_by_label: Dict[str, Tuple[np.ndarray, Tuple[float, float, float, float]]],
     title: str,
+    mode: str = "visualize",
+    editor_payload: Optional[Dict] = None,
 ) -> str:
-    """Generate HTML with Three.js visualization."""
+    """Generate HTML with Three.js visualization or editor."""
     # Prepare point cloud data (flattened for Three.js BufferAttribute)
     points_data = pts.astype(np.float32).flatten().tolist()
     
@@ -141,20 +164,28 @@ def _generate_html(
     # Load templates
     script_dir = Path(__file__).parent.resolve()
     assets_dir = script_dir / 'assets'
-    template_path = assets_dir / 'sit_viz_template.html'
-    logic_path = assets_dir / 'sit_viz_logic.js'
+    if mode == "edit":
+        template_path = assets_dir / 'sit_editor_template.html'
+        logic_path = assets_dir / 'sit_editor_logic.js'
+    else:
+        template_path = assets_dir / 'sit_viz_template.html'
+        logic_path = assets_dir / 'sit_viz_logic.js'
     
     if not template_path.exists():
         # Fallback to checking typical locations if run from root
         potential_assets = Path('tools/analysis_tools/assets').resolve()
         if potential_assets.exists():
-             template_path = potential_assets / 'sit_viz_template.html'
-             logic_path = potential_assets / 'sit_viz_logic.js'
+            if mode == "edit":
+                template_path = potential_assets / 'sit_editor_template.html'
+                logic_path = potential_assets / 'sit_editor_logic.js'
+            else:
+                template_path = potential_assets / 'sit_viz_template.html'
+                logic_path = potential_assets / 'sit_viz_logic.js'
     
     if not template_path.exists():
-        raise FileNotFoundError(f"Template not found at {template_path} or tools/analysis_tools/assets/sit_viz_template.html")
+        raise FileNotFoundError(f"Template not found at {template_path}")
     if not logic_path.exists():
-         raise FileNotFoundError(f"Logic script not found at {logic_path}")
+        raise FileNotFoundError(f"Logic script not found at {logic_path}")
 
     with open(template_path, 'r', encoding='utf-8') as f:
         html_template = f.read()
@@ -164,11 +195,15 @@ def _generate_html(
         
     # Replace placeholders
     html_content = html_template.replace('__TITLE__', title)
-    html_content = html_content.replace('__POINTS_DATA__', json.dumps(points_data))
-    html_content = html_content.replace('__BOXES_DATA__', json.dumps(boxes_data))
-    html_content = html_content.replace('__CENTER__', json.dumps(center))
-    html_content = html_content.replace('__CAMERA_DISTANCE__', json.dumps(camera_distance))
-    html_content = html_content.replace('__VISUALIZATION_LOGIC__', js_logic)
+    if mode == "edit":
+        html_content = html_content.replace('__EDITOR_DATA__', json.dumps(editor_payload or {}))
+        html_content = html_content.replace('__EDITOR_LOGIC__', js_logic)
+    else:
+        html_content = html_content.replace('__POINTS_DATA__', json.dumps(points_data))
+        html_content = html_content.replace('__BOXES_DATA__', json.dumps(boxes_data))
+        html_content = html_content.replace('__CENTER__', json.dumps(center))
+        html_content = html_content.replace('__CAMERA_DISTANCE__', json.dumps(camera_distance))
+        html_content = html_content.replace('__VISUALIZATION_LOGIC__', js_logic)
 
     return html_content
 
@@ -179,6 +214,8 @@ def render_with_threejs(
     title: str,
     block: bool = True,
     output_dir: Optional[str] = None,
+    mode: str = "visualize",
+    editor_payload: Optional[Dict] = None,
 ) -> str:
     """
     Render point cloud + multiple box sets using Three.js in browser.
@@ -193,7 +230,13 @@ def render_with_threejs(
     Returns:
         Path to the generated HTML file
     """
-    html_content = _generate_html(pts, boxes_by_label, title)
+    html_content = _generate_html(
+        pts,
+        boxes_by_label,
+        title,
+        mode=mode,
+        editor_payload=editor_payload,
+    )
     
     # Determine output directory
     if output_dir is None:
@@ -261,6 +304,37 @@ def render_with_threejs(
     return str(html_path_abs)
 
 
+def _extract_boxes(sample: Dict, id_to_class: Dict[int, str], colors: Dict[str, Tuple[float, float, float, float]]):
+    """Return boxes grouped by class for visualization and raw boxes for editing."""
+    boxes_by_class: Dict[str, List] = {}
+    raw_boxes: List[Dict] = []
+    total_boxes = 0
+
+    for inst in sample.get("instances", []):
+        label_id = inst.get("bbox_label", -1)
+        if label_id >= 0:
+            class_name = id_to_class.get(label_id, "Unknown")
+            boxes_by_class.setdefault(class_name, []).append(inst["bbox_3d"])
+            box = inst["bbox_3d"]
+            raw_boxes.append(
+                {
+                    "id": f"{sample.get('sample_idx', 0)}_{total_boxes}",
+                    "label": class_name,
+                    "center": [float(box[0]), float(box[1]), float(box[2])],
+                    "dims": [float(box[3]), float(box[4]), float(box[5])],
+                    "yaw": float(box[6]),
+                }
+            )
+            total_boxes += 1
+
+    boxes_param = {}
+    for cls_name, boxes in boxes_by_class.items():
+        boxes_np = np.asarray(boxes, dtype=np.float32)
+        boxes_param[cls_name] = (boxes_np, colors.get(cls_name, colors["Unknown"]))
+
+    return boxes_param, raw_boxes
+
+
 def render_sample(data_root: str, infos: str, idx: int, block: bool = False) -> None:
     """Helper for notebook/interactive use."""
     info = mmengine.load(infos)
@@ -323,6 +397,17 @@ def main():
         '--find-next',
         action='store_true',
         help='Find the first sample with annotations starting from idx')
+    parser.add_argument(
+         '--mode',
+         type=str,
+         choices=['visualize', 'edit'],
+         default='visualize',
+         help='visualize = viewer only, edit = launch editor HTML')
+    parser.add_argument(
+         '--window-size',
+         type=int,
+         default=5,
+         help='How many previous/next frames to preload for editor mode')
     args = parser.parse_args()
 
     print(f"Loading info file: {args.infos}")
@@ -413,42 +498,71 @@ def main():
     categories = info.get('metainfo', {}).get('categories', {})
     # Invert mapping: id -> name
     id_to_class = {v: k for k, v in categories.items()}
-    
-    gt_boxes_by_class = {}
-    total_boxes = 0
-    
-    for inst in sample.get('instances', []):
-        label_id = inst.get('bbox_label', -1)
-        if label_id >= 0:
-            class_name = id_to_class.get(label_id, 'Unknown')
-            if class_name not in gt_boxes_by_class:
-                gt_boxes_by_class[class_name] = []
-            gt_boxes_by_class[class_name].append(inst['bbox_3d'])
-            total_boxes += 1
-            
-    boxes_param = {}
-    for cls_name, boxes in gt_boxes_by_class.items():
-        boxes_np = np.asarray(boxes, dtype=np.float32)
-        color = colors.get(cls_name, colors['Unknown'])
-        boxes_param[cls_name] = (boxes_np, color)
+
+    boxes_param, raw_boxes = _extract_boxes(sample, id_to_class, colors)
+    total_boxes = sum(len(v[0]) for v in boxes_param.values())
 
     print(f"Found {total_boxes} GT boxes for sample {current_idx}")
     if total_boxes == 0 and not args.find_next:
-         print("Warning: No ground truth boxes found for this sample.")
-         print("Try using --find-next to automatically search for a sample with annotations.")
-         
-         # Check for train info file as alternative
-         train_infos_path = Path(args.infos.replace('_val', '_train'))
-         if train_infos_path.exists():
-             print(f"\nTip: Found {train_infos_path}. \n     The validation set might be unlabeled. Try using the training set:\n     python tools/analysis_tools/render_sit_gt.py --infos {train_infos_path} --idx 0")
+        print("Warning: No ground truth boxes found for this sample.")
+        print("Try using --find-next to automatically search for a sample with annotations.")
+        
+        # Check for train info file as alternative
+        train_infos_path = Path(args.infos.replace('_val', '_train'))
+        if train_infos_path.exists():
+            print(f"\nTip: Found {train_infos_path}. \n     The validation set might be unlabeled. Try using the training set:\n     python tools/analysis_tools/render_sit_gt.py --infos {train_infos_path} --idx 0")
 
-    render_with_threejs(
-        pts,
-        boxes_param,
-        title=f"SiT GT - Sample {current_idx} (Frame {frame_id})",
-        block=not args.no_block,
-        output_dir=args.output_dir,
-    )
+    if args.mode == "edit":
+        window = max(0, args.window_size)
+        start_idx = max(0, current_idx - window)
+        end_idx = min(len(data_list), current_idx + window + 1)
+        editor_frames: List[Dict] = []
+
+        for i in range(start_idx, end_idx):
+            sample_i = data_list[i]
+            frame_id_i = sample_i.get('sample_idx', i)
+            bin_path_i = Path(args.data_root) / 'training' / 'velodyne' / f'{frame_id_i:06d}.bin'
+            if not bin_path_i.exists():
+                bin_path_i = Path(args.data_root) / 'training' / 'velodyne' / f'{frame_id_i}.bin'
+            if not bin_path_i.exists():
+                print(f"Skipping frame {frame_id_i}: point cloud not found at {bin_path_i}")
+                continue
+
+            pts_i = load_points(bin_path_i)
+            boxes_param_i, raw_boxes_i = _extract_boxes(sample_i, id_to_class, colors)
+            editor_frames.append(_build_editor_frame(frame_id_i, pts_i, raw_boxes_i))
+
+            # For main frame, reuse computed boxes for visualization fallback
+            if i == current_idx:
+                boxes_param = boxes_param_i
+
+        label_colors = {k: [float(c[0]), float(c[1]), float(c[2])] for k, c in colors.items()}
+        editor_payload = {
+            "frames": editor_frames,
+            "initialFrameId": int(frame_id),
+            "labelColors": label_colors,
+            "labels": list(label_colors.keys()),
+            "window": window,
+            "title": f"SiT Editor - Frame {frame_id}",
+        }
+
+        render_with_threejs(
+            pts,
+            boxes_param,
+            title=f"SiT GT - Sample {current_idx} (Frame {frame_id})",
+            block=not args.no_block,
+            output_dir=args.output_dir,
+            mode="edit",
+            editor_payload=editor_payload,
+        )
+    else:
+        render_with_threejs(
+            pts,
+            boxes_param,
+            title=f"SiT GT - Sample {current_idx} (Frame {frame_id})",
+            block=not args.no_block,
+            output_dir=args.output_dir,
+        )
 
 
 if __name__ == '__main__':
