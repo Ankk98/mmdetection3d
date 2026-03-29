@@ -140,8 +140,71 @@ class Base3DInferencer(BaseInferencer):
         return -1
 
     def _init_visualizer(self, cfg: ConfigType) -> Optional[Visualizer]:
+        """Initialize visualizer with reasonable dataset metadata defaults.
+
+        Note:
+            In some versions of MMEngine, the visualizer may be initialized
+            before :attr:`self.model` is constructed. Accessing
+            ``self.model.dataset_meta`` in that case would raise an
+            :class:`AttributeError`. To make the inferencer robust, we fall
+            back to the dataset's metainfo when the model (or its
+            ``dataset_meta``) is not yet available.
+        """
         visualizer = super()._init_visualizer(cfg)
-        visualizer.dataset_meta = self.model.dataset_meta
+        # If the parent class decides not to create a visualizer (e.g. no
+        # visualizer defined in the config), bail out early.
+        if visualizer is None:
+            return None
+
+        dataset_meta = None
+        # Preferred: use the metadata that was stored on the model.
+        if getattr(self, 'model', None) is not None and hasattr(
+                self.model, 'dataset_meta'):
+            dataset_meta = self.model.dataset_meta
+
+        # Fallback: lazily build the test dataset to fetch its metainfo.
+        if dataset_meta is None:
+            try:
+                # ``cfg`` may be a Config object or a plain dict.
+                test_dataloader = None
+                if hasattr(cfg, 'test_dataloader'):
+                    test_dataloader = cfg.test_dataloader
+                elif isinstance(cfg, dict):
+                    test_dataloader = cfg.get('test_dataloader', None)
+
+                if test_dataloader is not None:
+                    # test_dataloader could be a dict, Config, or an object.
+                    # Prefer dict-style access when available; fall back to attribute.
+                    dataset_cfg = None
+                    if isinstance(test_dataloader, dict):
+                        dataset_cfg = test_dataloader.get('dataset')
+                    elif hasattr(test_dataloader, 'get'):
+                        dataset_cfg = test_dataloader.get('dataset', None)
+                    elif hasattr(test_dataloader, 'dataset'):
+                        dataset_cfg = getattr(test_dataloader, 'dataset')
+
+                    if dataset_cfg is not None:
+                        test_dataset_cfg = deepcopy(dataset_cfg)
+                        # lazy init. We only need the metainfo.
+                        test_dataset_cfg['lazy_init'] = True
+                        dataset_meta = DATASETS.build(
+                            test_dataset_cfg).metainfo
+            except Exception as exc:  # noqa: BLE001
+                # If anything goes wrong here, fall back to an empty dict
+                # instead of failing visualization entirely.
+                print_log(
+                    'Failed to build test dataset for visualizer metadata '
+                    f'fallback: {exc}',
+                    logger='current',
+                    level=logging.WARNING,
+                )
+
+        # Ensure we always set *some* dataset_meta so that downstream code
+        # that assumes a mapping does not crash.
+        if dataset_meta is None:
+            dataset_meta = {}
+
+        visualizer.dataset_meta = dataset_meta
         return visualizer
 
     def _dispatch_kwargs(self,

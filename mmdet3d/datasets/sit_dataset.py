@@ -1,9 +1,11 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-from typing import Callable, List, Union
+from typing import Callable, List, Optional, Union
 
+import os.path as osp
 import numpy as np
 
 from mmdet3d.registry import DATASETS
+from mmdet3d.structures import LiDARInstance3DBoxes
 from .kitti_dataset import KittiDataset
 
 
@@ -51,15 +53,23 @@ class SiTDataset(KittiDataset):
     def __init__(self,
                  data_root: str,
                  ann_file: str,
-                 pipeline: List[Union[dict, Callable]] = [],
-                 modality: dict = dict(use_lidar=True),
+                 pipeline: Optional[List[Union[dict, Callable]]] = None,
+                 modality: Optional[dict] = None,
                  default_cam_key: str = 'CAM2',
                  load_type: str = 'frame_based',
                  box_type_3d: str = 'LiDAR',
                  filter_empty_gt: bool = True,
                  test_mode: bool = False,
-                 pcd_limit_range: List[float] = [-50, -50, -5, 50, 50, 3],
+                 pcd_limit_range: Optional[List[float]] = None,
                  **kwargs) -> None:
+
+        # Avoid mutable default arguments by creating fresh instances here.
+        if pipeline is None:
+            pipeline = []
+        if modality is None:
+            modality = dict(use_lidar=True)
+        if pcd_limit_range is None:
+            pcd_limit_range = [-50, -50, -5, 50, 50, 3]
 
         # Call parent constructor with adjusted parameters
         super().__init__(
@@ -78,26 +88,98 @@ class SiTDataset(KittiDataset):
         # SiT-specific attributes if needed
         self.sit_classes = ['Pedestrian', 'Car']
 
+    def parse_data_info(self, info: dict) -> dict:
+        """Process the raw data info.
+
+        For SiT we follow the standard Det3DDataset path handling
+        (data_root + data_prefix + paths stored in the info file).
+        The converter stores only filenames in info files, and data_prefix
+        provides the directory path.
+
+        For backwards compatibility with old info files that contained full
+        paths, we detect and fix path duplication if present.
+        """
+        info = super().parse_data_info(info)
+
+        # Backwards compatibility: Fix old info files that had full paths
+        # This can be removed in a future version once all info files are
+        # regenerated with the updated converter
+        if self.modality.get('use_lidar', False) and 'lidar_points' in info:
+            lidar_path = info['lidar_points'].get('lidar_path', '')
+            # Check if path contains duplication pattern from old converter
+            dup_segment = osp.join('training', 'velodyne', 'training',
+                                   'velodyne')
+            if dup_segment in lidar_path:
+                # Old format detected - fix it
+                normalized = lidar_path.replace(
+                    dup_segment, osp.join('training', 'velodyne'))
+                info['lidar_points']['lidar_path'] = normalized
+                info['lidar_path'] = normalized
+                # Log warning to encourage migration
+                from mmengine.logging import print_log
+                print_log(
+                    'Detected old SiT info file format with full paths. '
+                    'Please regenerate info files using updated converter '
+                    'to avoid this warning.',
+                    logger='current',
+                    level=30)  # WARNING level
+
+        return info
+
     def parse_ann_info(self, info: dict) -> dict:
         """Process the `instances` in data info to `ann_info`.
 
         For SiT dataset, we use LiDAR-only processing without camera data.
+        We convert numpy arrays to :class:`LiDARInstance3DBoxes` objects.
+
+        Compared to the default KITTI flow, we still need to:
+
+        - use the base :class:`Det3DDataset` logic to build numpy arrays and
+          apply ``label_mapping``; and
+        - run ``_remove_dontcare`` so that any instances mapped to label ``-1``
+          (e.g. unknown classes from the converter) are filtered out.
 
         Args:
             info (dict): Data information of single data sample.
 
         Returns:
-            dict: Annotation information.
+            dict: Annotation information with ``gt_bboxes_3d`` as
+            :class:`LiDARInstance3DBoxes`.
         """
-        # For LiDAR-only datasets, we can skip the camera processing
-        # and use the base Det3DDataset implementation
-        if not self.modality['use_camera']:
-            # Use the base implementation which handles instances correctly
-            from mmdet3d.datasets.det3d_dataset import Det3DDataset
-            return Det3DDataset.parse_ann_info(self, info)
+        # Use the generic Det3D implementation to build ann_info with numpy
+        # arrays and label mapping applied. We cannot call super().parse_ann_info
+        # here because KittiDataset.parse_ann_info assumes camera geometry
+        # (e.g. info['images']['CAM2']['lidar2cam']), which SiT does not have.
+        from mmdet3d.datasets.det3d_dataset import Det3DDataset
+        ann_info = Det3DDataset.parse_ann_info(self, info)
+
+        if ann_info is None:
+            # Empty instance: mirror the parent contract by returning a complete
+            # `ann_info` dict that still contains the `instances` key.
+            ann_info = dict()
+            ann_info['gt_bboxes_3d'] = np.zeros((0, 7), dtype=np.float32)
+            ann_info['gt_labels_3d'] = np.zeros(0, dtype=np.int64)
+            # For empty GT, `instances` should be an empty list rather than
+            # reusing any original `info['instances']` entries that were
+            # filtered out upstream. This keeps the contract aligned with
+            # `Det3DDataset.parse_ann_info`, where no valid instances remain.
+            ann_info['instances'] = []
         else:
-            # Use KITTI implementation for camera data
-            return super().parse_ann_info(info)
+            # Filter out "dontcare"/unknown categories where labels are -1.
+            # The base _remove_dontcare() now handles both arrays and instances list
+            # consistently, so no special handling is needed.
+            ann_info = self._remove_dontcare(ann_info)
+
+        # Convert numpy array to LiDARInstance3DBoxes for LiDAR-only dataset.
+        # SiT uses LiDAR coordinates directly, so no camera-to-lidar transform
+        # is required here.
+        gt_bboxes_3d = LiDARInstance3DBoxes(
+            ann_info['gt_bboxes_3d'],
+            box_dim=ann_info['gt_bboxes_3d'].shape[-1]).convert_to(
+                self.box_mode_3d)
+
+        ann_info['gt_bboxes_3d'] = gt_bboxes_3d
+        return ann_info
 
     def _get_metainfo(self) -> dict:
         """Get meta information of dataset.

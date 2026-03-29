@@ -28,6 +28,79 @@ except ImportError:
         HAS_LZF = False
 
 
+def get_ego_matrix(ego_traj_path: str) -> np.ndarray:
+    """Load ego-motion matrix from trajectory file.
+    
+    Args:
+        ego_traj_path (str): Path to ego trajectory file.
+        
+    Returns:
+        np.ndarray: 4x4 ego-motion matrix (world to robot transform).
+    """
+    with open(ego_traj_path, 'r') as f:
+        lines = f.readlines()
+    # Parse comma-separated values and reshape to 4x4
+    return np.array([float(i) for i in lines[0].split(",")]).reshape(4, 4)
+
+
+def rotmat_to_euler(rot_mat: np.ndarray) -> np.ndarray:
+    """Convert rotation matrix to Euler angles (X-Y-Z convention).
+    
+    Args:
+        rot_mat (np.ndarray): 3x3 rotation matrix.
+        
+    Returns:
+        np.ndarray: [roll, pitch, yaw] in radians.
+    """
+    sy = np.sqrt(rot_mat[0, 0] * rot_mat[0, 0] + rot_mat[1, 0] * rot_mat[1, 0])
+    singular = sy < 1e-6
+    
+    if not singular:
+        roll = np.arctan2(rot_mat[2, 1], rot_mat[2, 2])
+        pitch = np.arctan2(-rot_mat[2, 0], sy)
+        yaw = np.arctan2(rot_mat[1, 0], rot_mat[0, 0])
+    else:
+        roll = np.arctan2(-rot_mat[1, 2], rot_mat[1, 1])
+        pitch = np.arctan2(-rot_mat[2, 0], sy)
+        yaw = 0
+        
+    return np.array([roll, pitch, yaw])
+
+
+def transform_boxes_world_to_lidar(gt_boxes: np.ndarray, ego_motion: np.ndarray) -> np.ndarray:
+    """Transform bounding boxes from world to LiDAR coordinates.
+    
+    Args:
+        gt_boxes (np.ndarray): Nx7 array [x, y, z, l, w, h, yaw] in world frame.
+        ego_motion (np.ndarray): 4x4 ego-motion matrix.
+        
+    Returns:
+        np.ndarray: Nx7 array [x, y, z, l, w, h, yaw] in LiDAR frame.
+    """
+    # Extract ego yaw angle
+    ego_yaw = rotmat_to_euler(ego_motion[:3, :3])[2]
+    
+    # Transform orientations
+    gt_boxes[:, 6] -= ego_yaw
+    
+    # Transform positions using inverse ego-motion
+    centers_world = gt_boxes[:, :3]
+    # Convert to homogeneous coordinates
+    centers_world_homog = np.concatenate(
+        [centers_world, np.ones((centers_world.shape[0], 1))], 
+        axis=1
+    )
+    # Apply inverse transformation
+    centers_lidar_homog = np.matmul(
+        np.linalg.inv(ego_motion), 
+        centers_world_homog.T
+    ).T
+    # Extract 3D coordinates
+    gt_boxes[:, :3] = centers_lidar_homog[:, :3]
+    
+    return gt_boxes
+
+
 def load_pcd_file(pcd_path: str) -> np.ndarray:
     """Load PCD file and return points as numpy array.
 
@@ -70,6 +143,11 @@ def convert_pcd_to_bin(pcd_path: str, bin_path: str) -> bool:
 
     Returns:
         bool: True if conversion successful.
+    
+    Note:
+        SiT raw point clouds are ALREADY in LiDAR frame (centered near origin).
+        Only the labels are in world coordinates and need ego-motion transformation.
+        Do NOT apply ego transform to point clouds!
     """
     try:
         points = load_pcd_file(pcd_path)
@@ -84,6 +162,7 @@ def convert_pcd_to_bin(pcd_path: str, bin_path: str) -> bool:
             points = np.column_stack([points, padding])
 
         # Save as binary float32
+        # Note: NO ego transform needed - SiT point clouds are already in LiDAR frame
         points.astype(np.float32).tofile(bin_path)
         return True
 
@@ -117,13 +196,17 @@ def parse_sit_label_line(line: str) -> Dict:
 
 
 def convert_label_3d_to_kitti(sit_label_path: str, kitti_label_path: str,
-                             calib_data: Optional[Dict] = None) -> bool:
-    """Convert SiT 3D labels to KITTI format.
+                             calib_data: Optional[Dict] = None,
+                             ego_traj_path: Optional[str] = None,
+                             apply_ego_transform: bool = True) -> bool:
+    """Convert SiT 3D labels to KITTI format with ego-motion transformation.
 
     Args:
         sit_label_path (str): Path to SiT label file.
         kitti_label_path (str): Path to output KITTI label file.
         calib_data (dict, optional): Calibration data for coordinate transformations.
+        ego_traj_path (str, optional): Path to ego trajectory file for world-to-LiDAR transformation.
+        apply_ego_transform (bool): Whether to apply ego-motion transformation. Default: True.
 
     Returns:
         bool: True if conversion successful.
@@ -132,47 +215,122 @@ def convert_label_3d_to_kitti(sit_label_path: str, kitti_label_path: str,
         with open(sit_label_path, 'r') as f:
             lines = f.readlines()
 
-        kitti_labels = []
+        if not lines:
+            # Create empty file
+            with open(kitti_label_path, 'w') as f:
+                pass
+            return True
 
+        # Map SiT classes to KITTI classes
+        class_mapping = {
+            'Pedestrian': 'Pedestrian',
+            'Pedestrain_sitting': 'Pedestrian',  # Map to Pedestrian (typo in original dataset)
+            'Car': 'Car',
+            # Vehicle classes mapped to Car
+            'Truck': 'Car',
+            'Bus': 'Car',
+            # Person-on-vehicle classes mapped to Pedestrian
+            'Cyclist': 'Pedestrian',
+            'Motorcyclist': 'Pedestrian',
+        }
+
+        # Parse all labels first (in world coordinates)
+        parsed_labels = []
         for line in lines:
             if line.strip():
-                label_data = parse_sit_label_line(line)
-
-                # Map SiT classes to KITTI classes
-                class_mapping = {
-                    'Pedestrian': 'Pedestrian',
-                    'Pedestrain_sitting': 'Pedestrian',  # Map to Pedestrian
-                    'Car': 'Car'
-                }
-
-                kitti_class = class_mapping.get(label_data['class_name'])
-                if kitti_class is None:
-                    print(f"Warning: Unknown class {label_data['class_name']}, skipping")
+                try:
+                    label_data = parse_sit_label_line(line)
+                    kitti_class = class_mapping.get(label_data['class_name'])
+                    if kitti_class is None:
+                        print(f"Warning: Unknown class {label_data['class_name']}, skipping")
+                        continue
+                    
+                    # Store with mapped class
+                    label_data['kitti_class'] = kitti_class
+                    parsed_labels.append(label_data)
+                except Exception as e:
+                    print(f"Warning: Failed to parse label line: {line.strip()}, error: {e}")
                     continue
 
-                # KITTI format: type truncated occluded alpha bbox_2d[4] dims[3] loc[3] rot_y score
-                # For now, set defaults for fields we can't compute without calibration
-                truncated = 0.0  # Not truncated
-                occluded = 0     # Fully visible
-                alpha = 0.0      # Observation angle (would need camera calibration)
-                bbox_2d = [0, 0, 0, 0]  # 2D bbox (would need projection)
-                score = 1.0      # Ground truth
+        if not parsed_labels:
+            # No valid labels, create empty file
+            with open(kitti_label_path, 'w') as f:
+                pass
+            return True
 
-                # Dimensions: KITTI uses h, w, l format
-                h, w, l = label_data['dimensions']
+        # Collect all boxes in [x, y, z, l, w, h, yaw] format
+        gt_boxes = []
+        for label in parsed_labels:
+            h, w, l = label['dimensions']
+            x, y, z = label['location']
+            yaw = label['rotation_y']
+            gt_boxes.append([x, y, z, l, w, h, yaw])
+        
+        gt_boxes = np.array(gt_boxes, dtype=np.float32)
 
-                # Location: x, y, z in camera coordinates (would need transformation)
-                x, y, z = label_data['location']
+        # Apply ego-motion transformation if requested and trajectory file provided
+        if apply_ego_transform and ego_traj_path is not None:
+            if osp.exists(ego_traj_path):
+                try:
+                    # Load ego-motion matrix
+                    ego_motion = get_ego_matrix(ego_traj_path)
+                    
+                    # Transform boxes from world to LiDAR frame
+                    gt_boxes = transform_boxes_world_to_lidar(gt_boxes, ego_motion)
+                except Exception as e:
+                    print(f"Warning: Failed to apply ego-motion transformation: {e}")
+                    print(f"Ego trajectory file: {ego_traj_path}")
+            else:
+                print(f"Warning: Ego trajectory file not found: {ego_traj_path}")
+                print("Labels will remain in world coordinates (this will cause zero mAP!)")
 
-                # Rotation
-                rot_y = label_data['rotation_y']
+        # ------------------------------------------------------------------ #
+        # Normalize yaw to [-pi, pi] and filter boxes to point cloud range
+        # consistent with training/eval config.
+        # ------------------------------------------------------------------ #
+        pcd_limit_range = np.array([-50, -50, -5, 50, 50, 3], dtype=np.float32)
 
-                # Create KITTI label line
-                kitti_line = f"{kitti_class} {truncated} {occluded} {alpha} " \
-                           f"{bbox_2d[0]} {bbox_2d[1]} {bbox_2d[2]} {bbox_2d[3]} " \
-                           f"{h} {w} {l} {x} {y} {z} {rot_y} {score}\n"
+        # Wrap yaw
+        gt_boxes[:, 6] = (gt_boxes[:, 6] + np.pi) % (2 * np.pi) - np.pi
 
-                kitti_labels.append(kitti_line)
+        # Filter by center range
+        centers = gt_boxes[:, :3]
+        in_range = ((centers > pcd_limit_range[:3])
+                    & (centers < pcd_limit_range[3:])).all(axis=1)
+
+        gt_boxes = gt_boxes[in_range]
+        parsed_labels = [lbl for lbl, keep in zip(parsed_labels, in_range) if keep]
+
+        if len(gt_boxes) == 0:
+            # No valid boxes after filtering; write empty label file
+            with open(kitti_label_path, 'w') as f:
+                pass
+            return True
+
+        # Write KITTI labels with transformed coordinates
+        kitti_labels = []
+        for i, label in enumerate(parsed_labels):
+            # Get transformed box
+            x, y, z, l, w, h, yaw = gt_boxes[i]
+            
+            # KITTI format: type truncated occluded alpha bbox_2d[4] dims[3] loc[3] rot_y score
+            truncated = 0.0  # Not truncated
+            occluded = 0     # Fully visible
+            alpha = 0.0      # Observation angle (would need camera calibration)
+            bbox_2d = [0, 0, 0, 0]  # 2D bbox (would need projection)
+            score = 1.0      # Ground truth
+
+            # Dimensions: KITTI uses h, w, l format
+            h_out = h
+            w_out = w
+            l_out = l
+
+            # Create KITTI label line with transformed coordinates
+            kitti_line = f"{label['kitti_class']} {truncated} {occluded} {alpha} " \
+                       f"{bbox_2d[0]} {bbox_2d[1]} {bbox_2d[2]} {bbox_2d[3]} " \
+                       f"{h_out} {w_out} {l_out} {x} {y} {z} {yaw} {score}\n"
+
+            kitti_labels.append(kitti_line)
 
         # Write KITTI labels
         with open(kitti_label_path, 'w') as f:
@@ -182,6 +340,8 @@ def convert_label_3d_to_kitti(sit_label_path: str, kitti_label_path: str,
 
     except Exception as e:
         print(f"Error converting {sit_label_path} to {kitti_label_path}: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -290,17 +450,26 @@ def create_imagesets(output_root: str, sequences: List[str], split_ratio: Tuple[
         sequences (List[str]): List of sequence names.
         split_ratio (tuple): Train/val/test split ratios.
     """
-    # Collect all frame indices
-    all_frames = []
-
-    for seq in sequences:
-        seq_dir = osp.join(output_root, 'training', 'velodyne')
-        if osp.exists(seq_dir):
-            bin_files = [f for f in os.listdir(seq_dir) if f.endswith('.bin')]
-            frame_indices = sorted([int(f.split('.')[0]) for f in bin_files])
-            # Add sequence prefix to avoid conflicts
-            prefixed_frames = [f"{seq}_{idx}" for idx in frame_indices]
-            all_frames.extend(prefixed_frames)
+    # Collect all frame indices once from the normalized KITTI-style layout:
+    #   output_root/training/velodyne/*.bin
+    #
+    # NOTE:
+    #   Earlier versions incorrectly iterated over `sequences` while always
+    #   reading from the same `training/velodyne` directory and prefixing each
+    #   frame index with the sequence name. This resulted in the same frames
+    #   being duplicated for every sequence (e.g. `seqA_000001`, `seqB_000001`)
+    #   even though they all pointed to the same underlying `.bin` files.
+    #   Since the conversion step already normalizes all sequences into a
+    #   single `training/velodyne` folder, we should only scan that folder
+    #   once and use the raw frame indices.
+    all_frames: List[str] = []
+    seq_dir = osp.join(output_root, 'training', 'velodyne')
+    if osp.exists(seq_dir):
+        bin_files = [f for f in os.listdir(seq_dir) if f.endswith('.bin')]
+        # Keep the filename stem as-is (e.g. '000123') instead of casting to int
+        # so that any zero-padding is preserved in the ImageSets files.
+        frame_ids = sorted([osp.splitext(f)[0] for f in bin_files])
+        all_frames.extend(frame_ids)
 
     # Split frames
     n_frames = len(all_frames)
@@ -326,9 +495,14 @@ def create_imagesets(output_root: str, sequences: List[str], split_ratio: Tuple[
     write_split_file('test.txt', test_frames)
 
 
-def get_sit_image_info(data_path: str, training: bool = True, label_info: bool = True,
-                       velodyne: bool = True, calib: bool = False, image_ids: List[int] = None,
-                       relative_path: bool = True, with_imageshape: bool = True):
+def get_sit_image_info(data_path: str,
+                       training: bool = True,
+                       label_info: bool = True,
+                       velodyne: bool = True,
+                       calib: bool = False,
+                       image_ids: List[str] = None,
+                       relative_path: bool = True,
+                       with_imageshape: bool = True):
     """Get SiT image info similar to KITTI format.
 
     Args:
@@ -347,40 +521,65 @@ def get_sit_image_info(data_path: str, training: bool = True, label_info: bool =
     root_path = Path(data_path)
 
     if image_ids is None:
-        # Get all available frame indices
+        # Get all available frame indices from the normalized KITTI-style layout:
+        #   data_path/training/velodyne/*.bin (train)
+        #   data_path/testing/velodyne/*.bin  (test, if present)
         if training:
             velodyne_dir = root_path / 'training' / 'velodyne'
         else:
             velodyne_dir = root_path / 'testing' / 'velodyne'
 
         if velodyne_dir.exists():
+            # Preserve the original zero-padded string frame IDs (e.g. "000001")
+            # instead of converting them to integers. Converting to int would
+            # drop leading zeros and later generate wrong file paths such as
+            # "training/velodyne/1.bin" instead of "training/velodyne/000001.bin".
             bin_files = [f for f in os.listdir(velodyne_dir) if f.endswith('.bin')]
-            image_ids = sorted([int(f.split('.')[0]) for f in bin_files])
+            image_ids = sorted([osp.splitext(f)[0] for f in bin_files])
         else:
             image_ids = []
 
-    def map_func(idx):
+    def map_func(frame_id):
         info = {}
+
+        # Normalize frame id to string and integer forms. The string keeps the
+        # exact zero-padding used on disk (e.g. "000001"), while the integer is
+        # convenient for code that expects a numeric index in metadata.
+        frame_id_str = str(frame_id)
+        try:
+            frame_id_int = int(frame_id_str)
+        except ValueError:
+            # Fallback: if the frame id cannot be parsed as int, just keep 0.
+            # This should not happen for normal SiT/KITTI-style IDs.
+            frame_id_int = 0
+
+        # `sample_idx` is expected by downstream code such as
+        # :func:`create_groundtruth_database` (see usages in
+        # `tools/dataset_converters/create_gt_database.py`).  For KITTI-like
+        # datasets this is simply the integer frame id.
+        info['sample_idx'] = frame_id_int
 
         # Point cloud info
         if velodyne:
             pc_info = {'num_pts_feats': 4}
-            if training:
-                pc_info['lidar_path'] = f'training/velodyne/{idx}.bin'
-            else:
-                pc_info['lidar_path'] = f'testing/velodyne/{idx}.bin'
+            # Store only filename - data_prefix will provide the directory path
+            # This matches the pattern used by Waymo and updated KITTI converters
+            # and prevents path duplication when combined with data_prefix
+            pc_info['lidar_path'] = f'{frame_id_str}.bin'
             info['lidar_points'] = pc_info
 
         # Image info (placeholder)
         if with_imageshape:
             image_info = {
-                'image_idx': idx,
+                # Keep a numeric index for compatibility with downstream tools
+                # while preserving zero-padded strings in file paths.
+                'image_idx': frame_id_int,
                 'image_shape': np.array([1024, 1024], dtype=np.int32)  # Placeholder shape
             }
             if training:
-                image_info['image_path'] = f'training/image_2/{idx}.png'
+                image_info['image_path'] = f'training/image_2/{frame_id_str}.png'
             else:
-                image_info['image_path'] = f'testing/image_2/{idx}.png'
+                image_info['image_path'] = f'testing/image_2/{frame_id_str}.png'
             info['image'] = image_info
 
         # Calibration info (placeholder)
@@ -394,9 +593,12 @@ def get_sit_image_info(data_path: str, training: bool = True, label_info: bool =
             }
             info['calib'] = calib_info
 
-        # Load annotations if available
+        # Load annotations if available. Always initialize `instances` so that
+        # downstream Det3DDataset/SiTDataset logic can safely access it even
+        # when a frame has no labels.
+        info['instances'] = []
         if label_info and training:
-            label_path = root_path / 'training' / 'label_2' / f'{idx}.txt'
+            label_path = root_path / 'training' / 'label_2' / f'{frame_id_str}.txt'
             if label_path.exists():
                 annotations = get_kitti_style_annotations(str(label_path))
                 if annotations and len(annotations['name']) > 0:
@@ -479,24 +681,52 @@ def convert_annos_to_instances(annos: dict) -> list:
     if len(annos['name']) == 0:
         return instances
 
-    # Class mapping
+    # Class mapping. Any class not in this mapping will be treated as
+    # "unknown" and skipped. This avoids propagating invalid labels (e.g. -1)
+    # into downstream evaluation code.
     class_mapping = {'Pedestrian': 0, 'Car': 1}
 
     for i in range(len(annos['name'])):
+        mapped_label = class_mapping.get(annos['name'][i], -1)
+        if mapped_label < 0:
+            # Skip instances with unknown class names instead of assigning
+            # label -1. Keeping them would later cause KeyError when
+            # converting back to KITTI names via label2cat[-1].
+            continue
+
         instance = {
             'bbox': annos['bbox'][i].tolist(),
-            'bbox_label': class_mapping.get(annos['name'][i], -1),
+            'bbox_label': mapped_label,
+            # KITTI `dimensions` are [h, w, l]. For LiDAR boxes we expect
+            # [size_x, size_y, size_z] = [length, width, height], with z vertical.
+            #
+            # BUG FIX: The SiT dataset raw labels store dimensions differently.
+            # After conversion to KITTI format, dims are [h, w, l] but the
+            # actual values show that what's stored as 'l' is actually the
+            # shorter dimension (width) and 'w' is the longer dimension (length)
+            # for vehicles. This is evident from Car stats: dim0=2.04, dim1=4.46
+            # where dim1 (originally 'w' in KITTI) is clearly the car length.
+            #
+            # To produce correct [l, w, h] order where l > w for vehicles:
+            # - Take max(l, w) as length (size_x)
+            # - Take min(l, w) as width (size_y)
+            # - Keep h as height (size_z)
             'bbox_3d': [
                 annos['location'][i][0],  # x
                 annos['location'][i][1],  # y
                 annos['location'][i][2],  # z
-                annos['dimensions'][i][1],  # w
-                annos['dimensions'][i][0],  # h
-                annos['dimensions'][i][2],  # l
-                annos['rotation_y'][i]     # yaw
+                # KITTI dimensions are [h, w, l]. We need [l, w, h] for LiDAR boxes.
+                # NOTE: SiT dataset has a convention where for some objects (esp. cars),
+                # what's labeled as 'w' is actually longer than 'l'. This is a dataset
+                # quirk, NOT a bug. We preserve the original values and adjust anchors
+                # to match. The yaw angle is consistent with the original labeling.
+                annos['dimensions'][i][2],  # l -> size_x
+                annos['dimensions'][i][1],  # w -> size_y
+                annos['dimensions'][i][0],  # h -> size_z
+                annos['rotation_y'][i]      # yaw (unchanged)
             ],
             'bbox_3d_isvalid': True,
-            'bbox_label_3d': class_mapping.get(annos['name'][i], -1),
+            'bbox_label_3d': mapped_label,
             'depth': 0.0,  # Placeholder depth
             'center_2d': [0.0, 0.0],  # Placeholder center 2D
             'attr_label': -1,  # No attribute
@@ -510,8 +740,12 @@ def convert_annos_to_instances(annos: dict) -> list:
     return instances
 
 
-def create_sit_infos(data_path: str, save_path: str = None, pkl_prefix: str = 'sit',
-                     relative_path: bool = True):
+def create_sit_infos(data_path: str,
+                     save_path: str = None,
+                     pkl_prefix: str = 'sit',
+                     relative_path: bool = True,
+                     split_ratio: Tuple[float, float, float] = (0.7, 0.15,
+                                                                0.15)):
     """Create info file of SiT dataset.
 
     Args:
@@ -519,6 +753,11 @@ def create_sit_infos(data_path: str, save_path: str = None, pkl_prefix: str = 's
         save_path (str, optional): Path to save the info file.
         pkl_prefix (str): Prefix of the info file.
         relative_path (bool): Whether to use relative paths.
+        split_ratio (tuple): Train/val/test split ratios. Only the
+            train/val portions are used here, but the semantics should
+            match :func:`create_imagesets` so that the frame indices in
+            ``train.txt`` / ``val.txt`` align with the samples in
+            ``*_infos_train.pkl`` / ``*_infos_val.pkl``.
     """
     if save_path is None:
         save_path = data_path
@@ -533,41 +772,54 @@ def create_sit_infos(data_path: str, save_path: str = None, pkl_prefix: str = 's
         'info_version': '1.1'
     }
 
-    # Create training info
+    # Create full info list
     print('Creating SiT training info...')
-    sit_infos_train = get_sit_image_info(
-        data_path, training=True, label_info=True, velodyne=True, calib=True,
+    full_infos = get_sit_image_info(
+        data_path,
+        training=True,
+        label_info=True,
+        velodyne=True,
+        calib=True,
         relative_path=relative_path)
 
-    # Calculate num_points_in_gt
+    # Split into train / val BEFORE saving so that train/val splits match the
+    # ImageSets split produced by :func:`create_imagesets`, which uses the
+    # same ``split_ratio`` convention.
+    n_samples = len(full_infos)
+    n_train = int(n_samples * split_ratio[0])
+    n_val = int(n_samples * split_ratio[1])
+
+    sit_infos_train = full_infos[:n_train]
+    sit_infos_val = full_infos[n_train:n_train + n_val]
+
+    # Calculate num_points_in_gt per instance on the TRAIN split only
     _calculate_num_points_in_gt(data_path, sit_infos_train, relative_path)
 
-    # Convert to new format with data_list
+    # Save train infos
     train_data_info = {
         'metainfo': metainfo,
         'data_list': sit_infos_train
     }
-
     filename = save_path / f'{pkl_prefix}_infos_train.pkl'
     print(f'SiT info train file is saved to {filename}')
     mmengine.dump(train_data_info, filename)
 
-    # Create val info (using same data for now, split later)
-    sit_infos_val = sit_infos_train[:len(sit_infos_train)//5]  # 20% for val
-    sit_infos_train = sit_infos_train[len(sit_infos_train)//5:]  # 80% for train
-
+    # Save val infos
     val_data_info = {
         'metainfo': metainfo,
         'data_list': sit_infos_val
     }
-
     filename = save_path / f'{pkl_prefix}_infos_val.pkl'
     print(f'SiT info val file is saved to {filename}')
     mmengine.dump(val_data_info, filename)
 
-    # Create test info (placeholder)
+    # Create test info (placeholder – test split may not exist)
     sit_infos_test = get_sit_image_info(
-        data_path, training=False, label_info=False, velodyne=True, calib=True,
+        data_path,
+        training=False,
+        label_info=False,
+        velodyne=True,
+        calib=True,
         relative_path=relative_path)
 
     test_data_info = {
@@ -580,163 +832,123 @@ def create_sit_infos(data_path: str, save_path: str = None, pkl_prefix: str = 's
     mmengine.dump(test_data_info, filename)
 
 
-def _calculate_num_points_in_gt(data_path: str, infos: List[dict], relative_path: bool = True):
-    """Calculate number of points in each ground truth box.
+def _calculate_num_points_in_gt(data_path: str,
+                                infos: List[dict],
+                                relative_path: bool = True):
+    """Calculate number of LiDAR points inside each GT box.
+
+    For the new-style info format used by Det3DDataset, we:
+      - read the point cloud from info['lidar_points']['lidar_path']
+      - read 3D boxes from info['instances'][*]['bbox_3d']
+      - write counts into instances[*]['num_lidar_pts']
 
     Args:
-        data_path (str): Path to the data directory.
-        infos (List[dict]): List of info dictionaries.
-        relative_path (bool): Whether paths are relative.
+        data_path (str): Dataset root path (contains training/velodyne).
+        infos (List[dict]): List of per-frame info dicts.
+        relative_path (bool): Whether lidar_path is relative to data_path.
     """
     from mmdet3d.structures.ops import box_np_ops
 
     root_path = Path(data_path)
 
     for info in mmengine.track_iter_progress(infos):
-        if 'annos' not in info:
-            continue
-
-        annos = info['annos']
-        if len(annos['name']) == 0:
+        if 'instances' not in info or len(info['instances']) == 0:
             continue
 
         # Load point cloud
-        pc_path = info['point_cloud']['velodyne_path']
+        pc_path = info['lidar_points']['lidar_path']
         if relative_path:
             pc_path = root_path / pc_path
 
+        if not pc_path.exists():
+            # Skip if point cloud is missing
+            continue
+
         points = np.fromfile(str(pc_path), dtype=np.float32).reshape(-1, 4)
-        points = points[:, :3]  # x, y, z
+        points_xyz = points[:, :3]
 
-        # Get calibration matrices
-        if 'calib' in info:
-            Tr_velo_to_cam = info['calib']['Tr_velo_to_cam']
-            R0_rect = info['calib']['R0_rect']
-        else:
-            # Identity matrices if no calibration
-            Tr_velo_to_cam = np.eye(4)
-            R0_rect = np.eye(4)
+        # Collect boxes in [x, y, z, w, h, l, yaw] format from instances.
+        # Some instances may not have a valid 7-D bbox_3d; we must keep track
+        # of which instances contribute to `boxes` so that we can align the
+        # point counts correctly.
+        boxes = []
+        valid_insts = []
+        for inst in info['instances']:
+            bbox_3d = np.asarray(inst['bbox_3d'], dtype=np.float32)
+            if bbox_3d.shape[0] != 7:
+                continue
+            boxes.append(bbox_3d)
+            valid_insts.append(inst)
 
-        # Transform points to camera coordinates if needed
-        # For SiT, assuming points are already in appropriate coordinate system
+        if not boxes:
+            continue
 
-        num_points_in_gt = []
-        for i in range(len(annos['name'])):
-            # Get bbox in LiDAR coordinates
-            # For simplicity, assume annotations are in camera coordinates
-            # and we need to transform them to LiDAR coordinates for point counting
-            location = annos['location'][i]
-            dimensions = annos['dimensions'][i]  # h, w, l
-            rotation_y = annos['rotation_y'][i]
+        boxes = np.stack(boxes, axis=0).astype(np.float32)
 
-            # Create 3D bbox corners
-            # This is a simplified version - in practice, you'd use proper bbox operations
-            h, w, l = dimensions
-            x, y, z = location
+        # Count points per box using standard utility
+        point_indices = box_np_ops.points_in_rbbox(points_xyz, boxes)
+        counts = point_indices.sum(axis=0).astype(np.int32)
 
-            # Create rotation matrix
-            rot_mat = np.array([
-                [np.cos(rotation_y), 0, np.sin(rotation_y)],
-                [0, 1, 0],
-                [-np.sin(rotation_y), 0, np.cos(rotation_y)]
-            ])
-
-            # Create bbox corners
-            corners = np.array([
-                [l/2, h/2, w/2], [l/2, h/2, -w/2], [l/2, -h/2, -w/2], [l/2, -h/2, w/2],
-                [-l/2, h/2, w/2], [-l/2, h/2, -w/2], [-l/2, -h/2, -w/2], [-l/2, -h/2, w/2]
-            ])
-
-            # Rotate and translate
-            corners = (rot_mat @ corners.T).T + np.array([x, y, z])
-
-            # Count points inside bbox (simplified)
-            # In practice, use box_np_ops.points_in_rbbox
-            try:
-                # Assume points are in same coordinate system as bbox
-                mask = (
-                    (points[:, 0] >= corners[:, 0].min()) & (points[:, 0] <= corners[:, 0].max()) &
-                    (points[:, 1] >= corners[:, 1].min()) & (points[:, 1] <= corners[:, 1].max()) &
-                    (points[:, 2] >= corners[:, 2].min()) & (points[:, 2] <= corners[:, 2].max())
-                )
-                num_points = np.sum(mask)
-            except:
-                num_points = 0
-
-            num_points_in_gt.append(num_points)
-
-        annos['num_points_in_gt'] = np.array(num_points_in_gt, dtype=np.int32)
+        # Write back into only the instances that had valid 7-D boxes.
+        for inst, num in zip(valid_insts, counts):
+            inst['num_lidar_pts'] = int(num)
 
 
-def create_sit_database(data_path: str, save_path: str = None, pkl_prefix: str = 'sit',
-                       relative_path: bool = True):
+def create_sit_database(data_path: str,
+                        save_path: str = None,
+                        pkl_prefix: str = 'sit',
+                        relative_path: bool = True):
     """Create ground truth database for SiT dataset.
 
+    This is a thin wrapper around the generic `create_groundtruth_database`
+    helper so that `sit_converter.py --create-db` produces the same layout
+    as `tools/create_data.py sit ...`.
+
     Args:
-        data_path (str): Path to the data directory.
-        save_path (str, optional): Path to save the database file.
-        pkl_prefix (str): Prefix of the database file.
-        relative_path (bool): Whether to use relative paths.
+        data_path (str): Dataset root path (e.g. data/sit).
+        save_path (str, optional): Where to save database files (defaults to data_path).
+        pkl_prefix (str): Prefix of the info/db files (default: 'sit').
+        relative_path (bool): Whether to use relative paths in dbinfos.
     """
+    # Import transforms module to register all transforms (required for database creation)
+    import mmdet3d.datasets.transforms  # noqa: F401
+    
+    from tools.dataset_converters.create_gt_database import \
+        create_groundtruth_database
+
     if save_path is None:
         save_path = data_path
 
     save_path = Path(save_path)
-
-    # Load training info
     info_path = save_path / f'{pkl_prefix}_infos_train.pkl'
     if not info_path.exists():
         print(f'Info file {info_path} not found. Please create info files first.')
         return
 
-    sit_infos = mmengine.load(info_path)
-
-    # Create database similar to KITTI
-    database = {}
-
-    for info in mmengine.track_iter_progress(sit_infos):
-        if 'annos' not in info:
-            continue
-
-        annos = info['annos']
-        for i, name in enumerate(annos['name']):
-            if name not in database:
-                database[name] = []
-
-            # Extract point cloud within bbox (simplified)
-            # In practice, this would extract points within each 3D bbox
-            db_info = {
-                'name': name,
-                'path': info['point_cloud']['velodyne_path'],
-                'image_idx': info['image']['image_idx'],
-                'gt_idx': i,
-                'box3d_lidar': np.concatenate([
-                    annos['location'][i],
-                    annos['dimensions'][i],
-                    annos['rotation_y'][i][None]
-                ]),
-                'num_points_in_gt': annos['num_points_in_gt'][i],
-                'difficulty': 0,  # Placeholder
-            }
-
-            database[name].append(db_info)
-
-    # Save database
-    db_file = save_path / f'{pkl_prefix}_dbinfos_train.pkl'
-    print(f'SiT database file is saved to {db_file}')
-    mmengine.dump(database, db_file)
+    db_info_save_path = save_path / f'{pkl_prefix}_dbinfos_train.pkl'
+    database_save_path = save_path / f'{pkl_prefix}_gt_database'
+    create_groundtruth_database(
+        'SiTDataset',
+        str(data_path),
+        pkl_prefix,
+        info_path=None,
+        used_classes=['Pedestrian', 'Car'],
+        database_save_path=str(database_save_path),
+        db_info_save_path=str(db_info_save_path),
+        relative_path=relative_path)
 
 
-def convert_sequence(sit_root: str, output_root: str, sequence: str) -> bool:
+def convert_sequence(sit_root: str, output_root: str, sequence: str, start_frame_idx: int = 0) -> Tuple[bool, int]:
     """Convert a single SiT sequence to KITTI format.
 
     Args:
         sit_root (str): Root directory of SiT dataset.
         output_root (str): Root directory for converted output.
         sequence (str): Sequence name to convert.
+        start_frame_idx (int): Starting frame index for this sequence (to avoid conflicts).
 
     Returns:
-        bool: True if conversion successful.
+        Tuple[bool, int]: (True if conversion successful, next_frame_idx for next sequence).
     """
     sit_seq_dir = osp.join(sit_root, sequence)
     output_training_dir = osp.join(output_root, 'training')
@@ -747,71 +959,88 @@ def convert_sequence(sit_root: str, output_root: str, sequence: str) -> bool:
     os.makedirs(osp.join(output_training_dir, 'calib'), exist_ok=True)
     os.makedirs(osp.join(output_training_dir, 'image_2'), exist_ok=True)
 
-    print(f"Converting sequence: {sequence}")
+    print(f"Converting sequence: {sequence} (starting at frame {start_frame_idx})")
 
     # Get all frame indices from PCD files
     velo_dir = osp.join(sit_seq_dir, 'velo', 'concat', 'data')
     if not osp.exists(velo_dir):
         print(f"Warning: Velocity directory not found: {velo_dir}")
-        return False
+        return False, start_frame_idx
 
     pcd_files = sorted([f for f in os.listdir(velo_dir) if f.endswith('.pcd')])
     if not pcd_files:
         print(f"Warning: No PCD files found in {velo_dir}")
-        return False
+        return False, start_frame_idx
+
+    # Check if label_3d directory exists - if not, discard the entire sequence
+    label_3d_dir = osp.join(sit_seq_dir, 'label_3d')
+    if not osp.exists(label_3d_dir):
+        print(f"Warning: label_3d directory not found: {label_3d_dir}")
+        print(f"Discarding sequence {sequence} - no labels available")
+        return False, start_frame_idx
 
     success_count = 0
     total_count = len(pcd_files)
+    current_frame_idx = start_frame_idx
 
     for pcd_file in pcd_files:
-        frame_idx = pcd_file.split('.')[0]
+        # Use global frame counter to avoid conflicts between sequences
+        global_frame_idx = current_frame_idx
+        frame_idx_str = f'{global_frame_idx:06d}'  # Zero-padded to 6 digits (KITTI format)
+        current_frame_idx += 1
 
-        # Convert PCD to .bin
+        # Convert PCD to .bin (NO ego transform - SiT points are already in LiDAR frame)
         pcd_path = osp.join(velo_dir, pcd_file)
-        bin_path = osp.join(output_training_dir, 'velodyne', f'{frame_idx}.bin')
+        bin_path = osp.join(output_training_dir, 'velodyne', f'{frame_idx_str}.bin')
+        
+        original_frame_idx = pcd_file.split('.')[0]  # Original frame ID from sequence
 
         if convert_pcd_to_bin(pcd_path, bin_path):
-            print(f"  Converted PCD: {pcd_file} -> {frame_idx}.bin")
+            print(f"  Converted PCD: {pcd_file} -> {frame_idx_str}.bin")
         else:
             print(f"  Failed to convert PCD: {pcd_file}")
             continue
 
-        # Convert labels
-        label_path = osp.join(sit_seq_dir, 'label_3d', f'{frame_idx}.txt')
-        kitti_label_path = osp.join(output_training_dir, 'label_2', f'{frame_idx}.txt')
+        # Convert labels WITH ego-motion transformation
+        # Labels are in world coordinates, need to transform to LiDAR frame
+        label_path = osp.join(sit_seq_dir, 'label_3d', f'{original_frame_idx}.txt')
+        ego_traj_path = osp.join(sit_seq_dir, 'ego_trajectory', f'{original_frame_idx}.txt')
+        kitti_label_path = osp.join(output_training_dir, 'label_2', f'{frame_idx_str}.txt')
 
         if osp.exists(label_path):
-            if convert_label_3d_to_kitti(label_path, kitti_label_path):
-                print(f"  Converted labels: {frame_idx}.txt")
+            if convert_label_3d_to_kitti(label_path, kitti_label_path, 
+                                        ego_traj_path=ego_traj_path, 
+                                        apply_ego_transform=True):
+                print(f"  Converted labels: {original_frame_idx}.txt -> {frame_idx_str}.txt")
             else:
-                print(f"  Failed to convert labels: {frame_idx}.txt")
+                print(f"  Failed to convert labels: {original_frame_idx}.txt")
         else:
             # Create empty label file
             with open(kitti_label_path, 'w') as f:
                 pass
-            print(f"  No labels found for frame {frame_idx}, created empty file")
+            print(f"  No labels found for frame {original_frame_idx}, created empty file {frame_idx_str}.txt")
 
         # Convert calibration
-        calib_path = osp.join(sit_seq_dir, 'calib', f'{frame_idx}.txt')
-        kitti_calib_path = osp.join(output_training_dir, 'calib', f'{frame_idx}.txt')
+        calib_path = osp.join(sit_seq_dir, 'calib', f'{original_frame_idx}.txt')
+        kitti_calib_path = osp.join(output_training_dir, 'calib', f'{frame_idx_str}.txt')
 
         if osp.exists(calib_path):
             if convert_calib_to_kitti(calib_path, kitti_calib_path):
-                print(f"  Converted calibration: {frame_idx}.txt")
+                print(f"  Converted calibration: {original_frame_idx}.txt -> {frame_idx_str}.txt")
             else:
-                print(f"  Failed to convert calibration: {frame_idx}.txt")
+                print(f"  Failed to convert calibration: {original_frame_idx}.txt")
         else:
-            print(f"  No calibration found for frame {frame_idx}")
+            print(f"  No calibration found for frame {original_frame_idx}")
 
         # Create placeholder image file (SiT may not have images)
-        image_path = osp.join(output_training_dir, 'image_2', f'{frame_idx}.png')
+        image_path = osp.join(output_training_dir, 'image_2', f'{frame_idx_str}.png')
         # For now, just touch the file (would need actual image conversion)
         Path(image_path).touch()
 
         success_count += 1
 
-    print(f"Converted {success_count}/{total_count} frames for sequence {sequence}")
-    return success_count > 0
+    print(f"Converted {success_count}/{total_count} frames for sequence {sequence} (frames {start_frame_idx} to {current_frame_idx - 1})")
+    return success_count > 0, current_frame_idx
 
 
 def main():
@@ -827,6 +1056,8 @@ def main():
                        help='Create info files after conversion')
     parser.add_argument('--create-db', action='store_true',
                        help='Create database files after conversion')
+    parser.add_argument('--start-frame-idx', type=int, default=0,
+                       help='Starting frame index for this conversion run (to continue from previous conversion)')
 
     args = parser.parse_args()
 
@@ -850,11 +1081,15 @@ def main():
 
     print(f"Found sequences: {sequences}")
 
-    # Convert sequences
+    # Convert sequences with global frame counter to avoid ID conflicts
     converted_sequences = []
+    global_frame_counter = args.start_frame_idx
+    
     for seq in sequences:
-        if convert_sequence(args.sit_root, args.output_root, seq):
+        success, next_frame_idx = convert_sequence(args.sit_root, args.output_root, seq, global_frame_counter)
+        if success:
             converted_sequences.append(seq)
+            global_frame_counter = next_frame_idx
         else:
             print(f"Failed to convert sequence: {seq}")
 
@@ -866,7 +1101,10 @@ def main():
         # Create info files
         if args.create_info:
             print("Creating info files...")
-            create_sit_infos(args.output_root, pkl_prefix='sit')
+            create_sit_infos(
+                args.output_root,
+                pkl_prefix='sit',
+                split_ratio=tuple(args.split_ratio))
 
         # Create database files
         if args.create_db:

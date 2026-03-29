@@ -1,5 +1,14 @@
 # dataset settings
 dataset_type = 'SiTDataset'
+# Normalized SiT layout (mirrors KITTI):
+#   data/sit/
+#     ├── training/
+#     │   ├── velodyne/
+#     │   ├── label_2/
+#     │   ├── calib/
+#     │   └── image_2/
+#     ├── sit_infos_*.pkl
+#     └── sit_dbinfos_train.pkl
 data_root = 'data/sit/'
 class_names = ['Pedestrian', 'Car']
 point_cloud_range = [-50, -50, -5, 50, 50, 3]  # Based on SiT data analysis
@@ -151,6 +160,24 @@ val_evaluator = dict(
     type='KittiMetric',
     ann_file=data_root + 'sit_infos_val.pkl',
     metric='bbox',
+    # SiT uses LiDAR-only placeholders for camera geometry. Running the
+    # compiled KITTI evaluation on such data can lead to low-level
+    # segmentation faults. Enable format_only to skip the native eval
+    # while still dumping results in KITTI format if needed.
+    format_only=True,
+    submission_prefix=data_root + 'kitti_val_pred',
+    backend_args=backend_args)
+test_evaluator = dict(
+    type='KittiMetric',
+    ann_file=data_root + 'sit_infos_test.pkl',
+    metric='bbox',
+    format_only=True,
+    submission_prefix=data_root + 'kitti_test_pred',
     backend_args=backend_args)
 
-test_evaluator = val_evaluator
+# Visualization configuration so demos/inferencers can create a visualizer.
+vis_backends = [dict(type='LocalVisBackend')]
+visualizer = dict(
+    type='Det3DLocalVisualizer',
+    vis_backends=vis_backends,
+    name='visualizer')

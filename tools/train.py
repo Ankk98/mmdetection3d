@@ -59,10 +59,22 @@ def parse_args():
     # When using PyTorch version >= 2.0.0, the `torch.distributed.launch`
     # will pass the `--local-rank` parameter to `tools/train.py` instead
     # of `--local_rank`.
-    parser.add_argument('--local_rank', '--local-rank', type=int, default=0)
+    # However, according to PyTorch docs, we should read from os.environ['LOCAL_RANK']
+    # as the distributed launcher sets this automatically.
+    parser.add_argument('--local_rank', '--local-rank', type=int, default=None)
     args = parser.parse_args()
-    if 'LOCAL_RANK' not in os.environ:
-        os.environ['LOCAL_RANK'] = str(args.local_rank)
+    
+    # Prioritize LOCAL_RANK from environment (set by torch.distributed.launch)
+    # Fall back to command-line argument only if not in environment
+    if 'LOCAL_RANK' in os.environ:
+        local_rank = int(os.environ['LOCAL_RANK'])
+    elif args.local_rank is not None:
+        local_rank = args.local_rank
+        os.environ['LOCAL_RANK'] = str(local_rank)
+    else:
+        local_rank = 0
+        os.environ['LOCAL_RANK'] = str(local_rank)
+    
     return args
 
 

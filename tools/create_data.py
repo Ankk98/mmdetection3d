@@ -269,22 +269,44 @@ def semantickitti_data_prep(info_prefix, out_dir):
 def sit_data_prep(root_path, info_prefix, out_dir):
     """Prepare data related to SiT dataset.
 
-    Args:
-        root_path (str): Path of dataset root.
-        info_prefix (str): The prefix of info filenames.
-        out_dir (str): Output directory of the groundtruth database info.
-    """
-    # Create info files
-    sit.create_sit_infos(root_path, save_path=out_dir, pkl_prefix=info_prefix)
+    The normalized SiT layout mirrors KITTI:
 
-    # Create groundtruth database
+        root_path/
+          ├── training/
+          │   ├── velodyne/
+          │   ├── label_2/
+          │   ├── calib/
+          │   └── image_2/
+          ├── sit_infos_*.pkl
+          └── sit_dbinfos_train.pkl
+
+    Args:
+        root_path (str): Path of dataset root (e.g. ./data/sit).
+        info_prefix (str): The prefix of info filenames (e.g. 'sit').
+        out_dir (str): Output directory for info and database files
+            (usually the same as root_path).
+    """
+    # create_sit_infos expects data_path/training/velodyne/
+    # so we pass the dataset root (root_path), which contains `training/`.
+    data_path = root_path
+
+    # Create info files (sit_infos_train/val/test.pkl) under out_dir using the
+    # same default split convention as :func:`create_imagesets`
+    sit.create_sit_infos(
+        data_path, save_path=out_dir, pkl_prefix=info_prefix)
+
+    # Create groundtruth database and dbinfos using the generic helper.
+    # For SiT we always use `<info_prefix>_infos_train.pkl` relative to data_root,
+    # so we don't need to pass an explicit info_path here.
+    db_info_save_path = osp.join(out_dir, f'{info_prefix}_dbinfos_train.pkl')
     create_groundtruth_database(
         'SiTDataset',
-        root_path,
+        data_path,            # ./data/sit
         info_prefix,
-        f'{info_prefix}_infos_train.pkl',
+        info_path=None,
         used_classes=['Pedestrian', 'Car'],
-        database_save_path=out_dir)
+        database_save_path=osp.join(out_dir, f'{info_prefix}_gt_database'),
+        db_info_save_path=db_info_save_path)
 
 
 parser = argparse.ArgumentParser(description='Data converter arg parser')

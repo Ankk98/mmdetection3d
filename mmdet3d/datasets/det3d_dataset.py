@@ -143,8 +143,18 @@ class Det3DDataset(BaseDataset):
 
             # show statistics of this dataset
             print_log('-' * 30, 'current')
+            # Determine dataset type from ann_file name
+            ann_file_lower = ann_file.lower()
+            if 'train' in ann_file_lower:
+                dataset_type = 'training'
+            elif 'val' in ann_file_lower:
+                dataset_type = 'validation'
+            elif 'test' in ann_file_lower or self.test_mode:
+                dataset_type = 'test'
+            else:
+                dataset_type = 'test' if self.test_mode else 'training'
             print_log(
-                f'The length of {"test" if self.test_mode else "training"} dataset: {len(self)}',  # noqa: E501
+                f'The length of {dataset_type} dataset: {len(self)}',
                 'current')
             content_show = [['category', 'number']]
             for label, num in enumerate(self.num_ins_per_cat):
@@ -165,15 +175,47 @@ class Det3DDataset(BaseDataset):
                 instance with label `-1` will be removed.
 
         Returns:
-            dict: Annotations after filtering.
+            dict: Annotations after filtering. Both arrays and
+                instances list are filtered consistently.
         """
         img_filtered_annotations = {}
         filter_mask = ann_info['gt_labels_3d'] > -1
+        
         for key in ann_info.keys():
-            if key != 'instances':
-                img_filtered_annotations[key] = (ann_info[key][filter_mask])
+            if key == 'instances':
+                # Filter instances list to match arrays
+                # Add length validation to prevent silent truncation by zip
+                if len(ann_info[key]) != len(filter_mask):
+                    raise ValueError(
+                        f"Length mismatch in _remove_dontcare: "
+                        f"instances list has {len(ann_info[key])} items, "
+                        f"but filter_mask has {len(filter_mask)} items. "
+                        f"This indicates a data inconsistency that must be fixed."
+                    )
+                # Use list comprehension with zip (safe now that we validated lengths)
+                img_filtered_annotations[key] = [
+                    inst for inst, keep in zip(ann_info[key], filter_mask) if keep
+                ]
+            elif isinstance(ann_info[key], np.ndarray):
+                arr = ann_info[key]
+                # Scalar arrays (ndim == 0) cannot be masked; copy as-is.
+                if arr.ndim == 0:
+                    img_filtered_annotations[key] = arr
+                    continue
+                # Validate length consistency for array-like annotations
+                if arr.shape[0] != len(filter_mask):
+                    raise ValueError(
+                        f"Length mismatch in _remove_dontcare for key '{key}': "
+                        f"array length {arr.shape[0]} vs mask length {len(filter_mask)}. "
+                        f"This indicates a data inconsistency that must be fixed."
+                    )
+                # Filter numpy arrays using mask
+                img_filtered_annotations[key] = arr[filter_mask]
             else:
+                # For other types (dicts, lists that aren't instances), copy as-is
+                # This handles edge cases like nested structures
                 img_filtered_annotations[key] = ann_info[key]
+        
         return img_filtered_annotations
 
     def get_ann_info(self, index: int) -> dict:

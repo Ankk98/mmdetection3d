@@ -5,6 +5,7 @@ from os import path as osp
 import mmcv
 import mmengine
 import numpy as np
+import torch
 from mmcv.ops import roi_align
 from mmdet.evaluation import bbox_overlaps
 from mmengine import print_log, track_iter_progress
@@ -13,6 +14,47 @@ from pycocotools.coco import COCO
 
 from mmdet3d.registry import DATASETS
 from mmdet3d.structures.ops import box_np_ops as box_np_ops
+from mmdet3d.utils import register_all_modules
+
+# Register all mmdet3d modules to ensure transforms are available in the registry
+register_all_modules()
+
+# Import transforms module to register all transforms (required for dataset building)
+import mmdet3d.datasets.transforms  # noqa: F401
+
+
+def _to_numpy(array_like):
+    """Convert various point/box containers to a NumPy array.
+
+    This helper is aware of:
+    - NumPy arrays (returned as-is)
+    - PyTorch tensors (converted via ``detach().cpu().numpy()``)
+    - MMDet3D `BasePoints` / `BaseInstance3DBoxes` (accessing their
+      underlying ``.tensor`` attribute)
+    - Objects exposing a ``.numpy()`` method
+    For any other array-like, it falls back to ``np.asarray``.
+    """
+    if isinstance(array_like, np.ndarray):
+        return array_like
+
+    # PyTorch tensor (common for pipelines)
+    if isinstance(array_like, torch.Tensor):
+        return array_like.detach().cpu().numpy()
+
+    # MMDet3D `BasePoints` / boxes often expose a `.tensor` attribute.
+    if hasattr(array_like, 'tensor'):
+        tensor = array_like.tensor
+        if isinstance(tensor, torch.Tensor):
+            return tensor.detach().cpu().numpy()
+        if hasattr(tensor, 'numpy'):
+            return tensor.numpy()
+
+    # Generic objects with a `.numpy()` method.
+    if hasattr(array_like, 'numpy'):
+        return array_like.numpy()
+
+    # Fallback: try NumPy conversion.
+    return np.asarray(array_like)
 
 
 def _poly2mask(mask_ann, img_h, img_w):
@@ -218,6 +260,41 @@ def create_groundtruth_database(dataset_class_name,
                     backend_args=backend_args)
             ])
 
+    elif dataset_class_name == 'SiTDataset':
+        backend_args = None
+        # Normalized SiT layout (mirrors KITTI):
+        #   data_path/
+        #     ├── training/velodyne/
+        #     └── ...
+        dataset_cfg.update(
+            test_mode=False,
+            data_root=data_path,
+            data_prefix=dict(
+                pts='training/velodyne', img='training/image_2', sweeps=''),
+            modality=dict(
+                use_lidar=True,
+                use_depth=False,
+                use_lidar_intensity=True,
+                use_camera=False,
+            ),
+            pipeline=[
+                dict(
+                    type='LoadPointsFromFile',
+                    coord_type='LIDAR',
+                    load_dim=4,
+                    use_dim=4,
+                    backend_args=backend_args),
+                dict(
+                    type='LoadAnnotations3D',
+                    with_bbox_3d=True,
+                    with_label_3d=True,
+                    backend_args=backend_args)
+            ])
+        # For SiT, always use the standard relative info filename and let
+        # data_root control where it is loaded from. This avoids accidentally
+        # duplicating `data_root` when info_path is already prefixed.
+        dataset_cfg['ann_file'] = f'{info_prefix}_infos_train.pkl'
+
     dataset = DATASETS.build(dataset_cfg)
 
     if database_save_path is None:
@@ -241,9 +318,27 @@ def create_groundtruth_database(dataset_class_name,
         example = dataset.pipeline(data_info)
         annos = example['ann_info']
         image_idx = example['sample_idx']
-        points = example['points'].numpy()
-        gt_boxes_3d = annos['gt_bboxes_3d'].numpy()
-        names = [dataset.metainfo['classes'][i] for i in annos['gt_labels_3d']]
+        # Handle both old format (points) and new format (inputs['points'])
+        if 'points' in example:
+            points = _to_numpy(example['points'])
+        elif 'inputs' in example and 'points' in example['inputs']:
+            points = _to_numpy(example['inputs']['points'])
+        else:
+            raise KeyError(
+                "Could not find 'points' in example. "
+                f'Available keys: {list(example.keys())}')
+        # Ensure gt_boxes_3d is a NumPy array (handles BaseInstance3DBoxes, tensors, etc.)
+        gt_boxes_3d = _to_numpy(annos['gt_bboxes_3d'])
+        gt_labels_3d = _to_numpy(annos['gt_labels_3d']).astype(np.int64)
+
+        num_classes = len(dataset.metainfo['classes'])
+        if (gt_labels_3d < 0).any() or (gt_labels_3d >= num_classes).any():
+            bad = gt_labels_3d[(gt_labels_3d < 0) | (gt_labels_3d >= num_classes)]
+            raise ValueError(
+                f"Found invalid gt_labels_3d indices: {bad.tolist()} "
+                f"(valid range 0..{num_classes-1})")
+
+        names = [dataset.metainfo['classes'][i] for i in gt_labels_3d]
         group_dict = dict()
         if 'group_ids' in annos:
             group_ids = annos['group_ids']
@@ -406,10 +501,28 @@ class GTDatabaseCreater:
         example = self.pipeline(input_dict)
         annos = example['ann_info']
         image_idx = example['sample_idx']
-        points = example['points'].numpy()
-        gt_boxes_3d = annos['gt_bboxes_3d'].numpy()
+        # Handle both old format (points) and new format (inputs['points'])
+        if 'points' in example:
+            points = _to_numpy(example['points'])
+        elif 'inputs' in example and 'points' in example['inputs']:
+            points = _to_numpy(example['inputs']['points'])
+        else:
+            raise KeyError(
+                "Could not find 'points' in example. "
+                f'Available keys: {list(example.keys())}')
+        # Ensure gt_boxes_3d is a NumPy array (handles BaseInstance3DBoxes, tensors, etc.)
+        gt_boxes_3d = _to_numpy(annos['gt_bboxes_3d'])
+        gt_labels_3d = _to_numpy(annos['gt_labels_3d']).astype(np.int64)
+
+        num_classes = len(self.dataset.metainfo['classes'])
+        if (gt_labels_3d < 0).any() or (gt_labels_3d >= num_classes).any():
+            bad = gt_labels_3d[(gt_labels_3d < 0) | (gt_labels_3d >= num_classes)]
+            raise ValueError(
+                f"Found invalid gt_labels_3d indices: {bad.tolist()} "
+                f"(valid range 0..{num_classes-1})")
+
         names = [
-            self.dataset.metainfo['classes'][i] for i in annos['gt_labels_3d']
+            self.dataset.metainfo['classes'][i] for i in gt_labels_3d
         ]
         group_dict = dict()
         if 'group_ids' in annos:
